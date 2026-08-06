@@ -1,0 +1,21 @@
+services:
+  servarr:
+    build: .
+    container_name: servarr
+    restart: unless-stopped
+    ports:
+      - "8888:8888"
+    env_file:
+      - .env
+    volumes:
+      - ./data:/data
+      # Optional — only needed for Movie Night's daily-rotating shared-viewing
+      # link. Uncomment and point at your own Neko instance's .env file if
+      # you've set that up too (see the Movie Night section in the README).
+      # - /path/to/your/neko/.env:/neko-shared/neko.env:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8888/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
