@@ -305,6 +305,9 @@
         <input type="number" id="mn-candidates" min="2" />
         <label for="mn-pause">Minutes to pause 4K upgrades during Movie Night</label>
         <input type="number" id="mn-pause" min="0" />
+        <label for="mn-dj-role">Movie Night DJ role ID <span class="optional-badge">optional</span></label>
+        <input type="text" id="mn-dj-role" placeholder="Lets this role use /play-movie without needing full Manage Server permission" />
+        <div class="field-hint">Leave blank and only members with Manage Server can use /play-movie.</div>
 
         <div class="section-title">Leveling (XP)</div>
         <label for="xp-min">XP per message — minimum</label>
@@ -612,6 +615,7 @@
         movie_night_hour_utc: Number($("#mn-play-hour").value),
         movie_night_candidate_count: Number($("#mn-candidates").value),
         movie_night_pause_upgrade_minutes: Number($("#mn-pause").value),
+        movie_night_dj_role_id: $("#mn-dj-role").value.trim(),
         xp_min_per_message: Number($("#xp-min").value),
         xp_max_per_message: Number($("#xp-max").value),
         xp_cooldown_seconds: Number($("#xp-cooldown").value),
@@ -700,6 +704,7 @@
     $("#mn-play-hour").value = settingsData.movie_night_hour_utc;
     $("#mn-candidates").value = settingsData.movie_night_candidate_count;
     $("#mn-pause").value = settingsData.movie_night_pause_upgrade_minutes;
+    $("#mn-dj-role").value = settingsData.movie_night_dj_role_id || "";
     $("#xp-min").value = settingsData.xp_min_per_message;
     $("#xp-max").value = settingsData.xp_max_per_message;
     $("#xp-cooldown").value = settingsData.xp_cooldown_seconds;

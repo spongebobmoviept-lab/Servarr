@@ -1,6 +1,7 @@
 import asyncio
 import os
 from contextlib import asynccontextmanager
+from typing import Optional
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -11,6 +12,7 @@ from . import (
     bot,
     connections_store,
     movie_night,
+    mpv_control,
     neko_control,
     plex,
     plex_monitor,
@@ -22,7 +24,7 @@ from . import (
     tautulli,
     xp_store,
 )
-from .auth import check_credentials, require_login, security
+from .auth import MPV_REMOTE_COOKIE, check_credentials, require_login, require_login_or_remote_key, security
 from .config import settings
 from .logger import log
 
@@ -222,6 +224,119 @@ async def api_update_settings(update: dict, _: str = Depends(require_login)) -> 
     if unknown:
         raise HTTPException(status_code=400, detail=f"Unknown/non-editable setting(s): {unknown}")
     return JSONResponse(settings_store.save_overrides(update))
+
+
+@app.get("/mpv-remote", response_class=HTMLResponse)
+async def mpv_remote_page(request: Request, key: Optional[str] = None) -> Response:
+    """A minimal always-available transport-control page for the neko-mpv
+    player — unlike the old Plex-Desktop/Neko browser, plex-mpv-shim has no
+    on-screen UI to click at all once NEKO_DESKTOP_INPUT_ENABLED=false, so
+    there's otherwise no way to pause/seek/stop once it's playing. Meant to
+    be kept open in a small second window/tab alongside the movie, not a
+    replacement for the Discord commands (/mpv-*) — both call the same
+    mpv_control.py functions.
+
+    Opened via a plain link with ?key=<mpv_remote_key> (see bot.py's
+    /mpv-play command) instead of a login popup — confirmed live this was
+    real friction (nobody has the Servarr admin password memorized for a
+    quick "pause the movie" click). The key gets stashed in a cookie here
+    so the page's own fetch() calls Just Work afterwards with no changes
+    needed in mpv-remote.html. Visiting without a valid key still falls
+    back to the normal admin login, for anyone who bookmarks this directly.
+    """
+    if key and settings.mpv_remote_key and key == settings.mpv_remote_key:
+        response = FileResponse(os.path.join(STATIC_DIR, "mpv-remote.html"), headers=_NO_CACHE_HEADERS)
+        response.set_cookie(MPV_REMOTE_COOKIE, key, max_age=60 * 60 * 24 * 30, httponly=True, samesite="lax")
+        return response
+    if request.cookies.get(MPV_REMOTE_COOKIE) == settings.mpv_remote_key and settings.mpv_remote_key:
+        return FileResponse(os.path.join(STATIC_DIR, "mpv-remote.html"), headers=_NO_CACHE_HEADERS)
+    credentials = await security(request)
+    check_credentials(request, credentials)
+    return FileResponse(os.path.join(STATIC_DIR, "mpv-remote.html"), headers=_NO_CACHE_HEADERS)
+
+
+@app.get("/api/mpv/status")
+async def api_mpv_status(_: str = Depends(require_login_or_remote_key)) -> JSONResponse:
+    return JSONResponse(await mpv_control.get_status())
+
+
+@app.post("/api/mpv/play")
+async def api_mpv_play(body: dict, _: str = Depends(require_login_or_remote_key)) -> JSONResponse:
+    title = (body.get("title") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="title is required")
+    started = await mpv_control.play(title, body.get("year"))
+    if not started:
+        raise HTTPException(status_code=404, detail=f"Couldn't find '{title}' in the library")
+    return JSONResponse({"started": True})
+
+
+@app.get("/api/mpv/search")
+async def api_mpv_search(q: str, _: str = Depends(require_login_or_remote_key)) -> JSONResponse:
+    """Real search results to manually pick from (movies AND shows) — used
+    by the /mpv-remote browse UI. Unlike /api/mpv/play, this never guesses;
+    the caller always picks an exact item and hits /api/mpv/play-item.
+    """
+    if not q.strip():
+        return JSONResponse([])
+    return JSONResponse(await plex.search_library(q))
+
+
+@app.get("/api/mpv/children/{rating_key}")
+async def api_mpv_children(rating_key: str, _: str = Depends(require_login_or_remote_key)) -> JSONResponse:
+    """A show's seasons, or a season's episodes — same Plex /children shape
+    either way, so the browse UI calls this twice to drill all the way down
+    to a specific episode.
+    """
+    return JSONResponse(await plex.get_show_children(rating_key))
+
+
+@app.post("/api/mpv/play-item")
+async def api_mpv_play_item(body: dict, _: str = Depends(require_login_or_remote_key)) -> JSONResponse:
+    rating_key = str(body.get("rating_key") or "").strip()
+    if not rating_key:
+        raise HTTPException(status_code=400, detail="rating_key is required")
+    try:
+        offset_ms = int(body.get("offset_ms", 0))
+    except (TypeError, ValueError):
+        offset_ms = 0
+    started = await mpv_control.play_by_rating_key(rating_key, offset_ms)
+    return JSONResponse({"started": started})
+
+
+@app.get("/api/mpv/on-deck")
+async def api_mpv_on_deck(_: str = Depends(require_login_or_remote_key)) -> JSONResponse:
+    return JSONResponse(await plex.get_on_deck())
+
+
+@app.post("/api/mpv/pause")
+async def api_mpv_pause(_: str = Depends(require_login_or_remote_key)) -> JSONResponse:
+    ok = await mpv_control.pause()
+    return JSONResponse({"ok": ok})
+
+
+@app.post("/api/mpv/resume")
+async def api_mpv_resume(_: str = Depends(require_login_or_remote_key)) -> JSONResponse:
+    ok = await mpv_control.resume()
+    return JSONResponse({"ok": ok})
+
+
+@app.post("/api/mpv/stop")
+async def api_mpv_stop(_: str = Depends(require_login_or_remote_key)) -> JSONResponse:
+    ok = await mpv_control.stop()
+    return JSONResponse({"ok": ok})
+
+
+@app.post("/api/mpv/seek")
+async def api_mpv_seek(body: dict, _: str = Depends(require_login_or_remote_key)) -> JSONResponse:
+    try:
+        delta = int(body.get("delta_seconds", 0))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="delta_seconds must be an integer")
+    position = await mpv_control.seek(delta)
+    if position is None:
+        raise HTTPException(status_code=409, detail="Nothing is currently loaded")
+    return JSONResponse({"position_seconds": position})
 
 
 @app.post("/api/movie-night/force")

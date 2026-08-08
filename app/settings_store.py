@@ -8,6 +8,7 @@ EDITABLE_KEYS = [
     "movie_night_hour_utc",
     "movie_night_candidate_count",
     "movie_night_pause_upgrade_minutes",
+    "movie_night_dj_role_id",
     "xp_min_per_message",
     "xp_max_per_message",
     "xp_cooldown_seconds",

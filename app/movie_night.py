@@ -14,7 +14,7 @@ from typing import Optional
 
 import discord
 
-from . import neko_control, plex, radarr, reclaimarr_client
+from . import mpv_control, radarr, reclaimarr_client
 from .config import settings
 from .logger import log
 
@@ -105,7 +105,7 @@ async def announce_winner(guild: discord.Guild, is_test: bool = False) -> bool:
     winner = next(m for m in candidates if m.id == winner_id)
     await reclaimarr_client.pause_upgrade(winner.id, settings.movie_night_pause_upgrade_minutes)
 
-    started = await _start_in_neko(winner)
+    started = await start_in_neko(winner)
 
     embed = discord.Embed(
         title="🧪 [TEST] Movie Night pick" if is_test else "🎬 Tonight's Movie Night pick",
@@ -118,9 +118,11 @@ async def announce_winner(guild: discord.Guild, is_test: bool = False) -> bool:
         embed.description = (
             f"**{winner.title}**" + (f" ({winner.year})" if winner.year else "") + f"\n{note} — it's already loading up, click below to watch together!"
         )
-        viewer_link = neko_control.current_viewer_link() or settings.neko_public_url
+        # Viewer-level link — this posts to the whole channel, so it must
+        # never be the admin one (that would hand everyone the admin
+        # password and show them the control tab).
         view = discord.ui.View()
-        view.add_item(discord.ui.Button(label="▶️  WATCH LIVE", style=discord.ButtonStyle.link, url=viewer_link))
+        view.add_item(discord.ui.Button(label="▶️  WATCH LIVE", style=discord.ButtonStyle.link, url=mpv_control.viewer_link()))
     else:
         search_url = "https://app.plex.tv/desktop#!/search?query=" + urllib.parse.quote(winner.title)
         embed.description = (
@@ -134,26 +136,124 @@ async def announce_winner(guild: discord.Guild, is_test: bool = False) -> bool:
     return True
 
 
-async def _start_in_neko(winner: "radarr.LibraryMovie") -> bool:
-    """Best-effort: navigate the shared Neko browser to the winning movie and
-    hit play. Returns False (never raises) on anything short of full success
-    so a Neko/Plex hiccup can't take down the rest of the announcement.
+async def start_in_neko(movie: "radarr.LibraryMovie") -> bool:
+    """Best-effort: start this movie on the shared neko-mpv player. Returns
+    False (never raises) on anything short of full success so a
+    Neko/Plex hiccup can't take down whatever's calling this (a Movie
+    Night announcement, or a direct /play-movie trigger). Runs through
+    plex-mpv-shim's real Companion API (see mpv_control.py) — the old
+    Plex-Desktop/CDP-driven browser this used to drive has been retired.
     """
-    if not settings.neko_url or not settings.plex_url or winner.tmdb_id is None:
+    if not settings.neko_mpv_shim_url:
         return False
     try:
-        rating_key = await plex.find_rating_key_by_tmdb_id(winner.title, winner.tmdb_id)
-        if not rating_key:
-            await log(f"movie_night: couldn't resolve a Plex ratingKey for {winner.title!r} — skipping Neko automation")
-            return False
-        machine_id = await plex.get_machine_identifier()
-        if not machine_id:
-            return False
-        plex_web_url = f"https://app.plex.tv/desktop/#!/server/{machine_id}/details?key=%2Flibrary%2Fmetadata%2F{rating_key}"
-        return await neko_control.play_movie(plex_web_url)
+        return await mpv_control.play(movie.title, movie.year)
     except Exception as exc:  # noqa: BLE001
-        await log(f"movie_night: Neko automation failed: {exc}")
+        await log(f"movie_night: neko-mpv automation failed: {exc}")
         return False
+
+
+async def stop_movie() -> bool:
+    """/stop-movie's actual logic. Best-effort, same reasoning as
+    start_in_neko above."""
+    if not settings.neko_mpv_shim_url:
+        return False
+    try:
+        return await mpv_control.stop()
+    except Exception as exc:  # noqa: BLE001
+        await log(f"movie_night: stopping playback failed: {exc}")
+        return False
+
+
+async def play_now(channel: discord.abc.Messageable, movie: "radarr.LibraryMovie") -> bool:
+    """Shared by both Movie Night's own announcement and /play-movie's direct
+    trigger: pause upgrades so nothing swaps mid-movie, start it in Neko, and
+    post a watch-live announcement in the given channel.
+    """
+    await reclaimarr_client.pause_upgrade(movie.id, settings.movie_night_pause_upgrade_minutes)
+    started = await start_in_neko(movie)
+
+    embed = discord.Embed(title="🎬 Now playing", color=GOLD)
+    view = None
+    if started:
+        embed.description = f"**{movie.title}**" + (f" ({movie.year})" if movie.year else "") + "\nIt's already loading up, click below to watch together!"
+        view = discord.ui.View()
+        view.add_item(discord.ui.Button(label="▶️  WATCH LIVE", style=discord.ButtonStyle.link, url=mpv_control.viewer_link()))
+    else:
+        search_url = "https://app.plex.tv/desktop#!/search?query=" + urllib.parse.quote(movie.title)
+        embed.description = f"**{movie.title}**" + (f" ({movie.year})" if movie.year else "") + "\nCouldn't start it automatically — grab it yourself in Plex instead."
+        embed.add_field(name="Find it in Plex", value=f"[Search for it]({search_url})", inline=False)
+    if movie.poster_url:
+        embed.set_image(url=movie.poster_url)
+    await channel.send(embed=embed, view=view)
+    return started
+
+
+class PlayPickView(discord.ui.View):
+    """Only the person who ran /play-movie can pick — otherwise anyone
+    seeing the ephemeral picker in a shared channel context could hijack
+    someone else's search. Times out after a couple minutes since it's a
+    one-shot pick, not something meant to be revisited later.
+    """
+
+    def __init__(self, candidates: list, requester_id: int) -> None:
+        super().__init__(timeout=120)
+        self.requester_id = requester_id
+        for movie in candidates[:10]:
+            label = (movie.title + (f" ({movie.year})" if movie.year else ""))[:80]
+            btn = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary)
+            btn.callback = self._make_pick(movie)
+            self.add_item(btn)
+
+    def _make_pick(self, movie: "radarr.LibraryMovie"):
+        async def _cb(interaction: discord.Interaction) -> None:
+            if interaction.user.id != self.requester_id:
+                await interaction.response.send_message("Only whoever ran the command can pick.", ephemeral=True)
+                return
+            await interaction.response.edit_message(content=f"Starting **{movie.title}**…", view=None)
+            started = await play_now(interaction.channel, movie)
+            if started:
+                await _send_admin_link(interaction)
+
+        return _cb
+
+
+async def _send_admin_link(interaction: discord.Interaction) -> None:
+    """Sent privately only to whoever explicitly asked for this movie —
+    never posted to the channel. Lets them actually control the shared
+    session themselves (pause, seek), which the regular WATCH LIVE link
+    everyone else gets intentionally can't do.
+    """
+    link = mpv_control.admin_link()
+    if not link:
+        return
+    await interaction.followup.send(
+        f"🔑 Since you started it, here's the control link (pause/seek yourself) — "
+        f"keep this one to yourself, don't share it in chat: {link}",
+        ephemeral=True,
+    )
+
+
+async def play_specific(interaction: discord.Interaction, query: str) -> None:
+    """/play-movie's actual logic — search the downloaded library by title
+    and either play the single match directly, show a picker for multiple
+    matches, or report nothing found. Assumes the interaction has already
+    been deferred by the caller.
+    """
+    candidates = await radarr.list_downloaded_movies()
+    normalized = query.strip().lower()
+    matches = [m for m in candidates if normalized in m.title.lower()]
+    if not matches:
+        await interaction.followup.send(f"Couldn't find a downloaded movie matching **{query}**.", ephemeral=True)
+        return
+    if len(matches) == 1:
+        started = await play_now(interaction.channel, matches[0])
+        await interaction.followup.send(f"Starting **{matches[0].title}**…", ephemeral=True)
+        if started:
+            await _send_admin_link(interaction)
+        return
+    view = PlayPickView(matches, interaction.user.id)
+    await interaction.followup.send(f"Found {len(matches)} matches — pick one:", view=view, ephemeral=True)
 
 
 async def force_winner_now(guild: discord.Guild) -> bool:

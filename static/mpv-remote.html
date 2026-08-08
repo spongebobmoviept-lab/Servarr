@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Movie Remote</title>
+<link rel="icon" href="/favicon.svg">
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    background: #14161a;
+    color: #eee;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 14px 10px 20px;
+    min-height: 100vh;
+  }
+  h1 { font-size: 15px; font-weight: 600; margin: 0 0 10px; opacity: .8; }
+  #status {
+    font-size: 13px;
+    opacity: .75;
+    margin-bottom: 14px;
+    text-align: center;
+    min-height: 1.2em;
+  }
+  .row { display: flex; gap: 10px; margin-bottom: 10px; width: 100%; max-width: 360px; }
+  button {
+    flex: 1;
+    font-size: 15px;
+    padding: 16px 8px;
+    border: none;
+    border-radius: 10px;
+    background: #2a2d34;
+    color: #eee;
+    cursor: pointer;
+  }
+  button:active { background: #3a3e47; }
+  button.primary { background: #d4af37; color: #14161a; font-weight: 600; }
+  button.primary:active { background: #c29e2c; }
+  button.danger { background: #4a2323; }
+  button.danger:active { background: #5a2b2b; }
+  #msg { font-size: 12px; opacity: .6; margin: 8px 0; min-height: 1.2em; text-align: center; }
+
+  .divider { width: 100%; max-width: 360px; border-top: 1px solid #2a2d34; margin: 16px 0 12px; }
+
+  #browse { width: 100%; max-width: 360px; }
+  #searchRow { display: flex; gap: 8px; margin-bottom: 10px; }
+  #searchInput {
+    flex: 1;
+    padding: 12px;
+    border-radius: 8px;
+    border: 1px solid #3a3e47;
+    background: #1c1f24;
+    color: #eee;
+    font-size: 14px;
+  }
+  #searchBtn { flex: 0 0 auto; padding: 12px 16px; }
+
+  #breadcrumb {
+    display: none;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 10px;
+    font-size: 13px;
+    opacity: .8;
+  }
+  #breadcrumb button {
+    flex: 0 0 auto;
+    padding: 6px 10px;
+    font-size: 13px;
+    border-radius: 6px;
+  }
+
+  #results { display: flex; flex-direction: column; gap: 6px; max-height: 50vh; overflow-y: auto; }
+  .result {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px;
+    border-radius: 8px;
+    background: #1c1f24;
+    cursor: pointer;
+  }
+  .result:active { background: #262a31; }
+  .result img {
+    width: 34px;
+    height: 50px;
+    object-fit: cover;
+    border-radius: 4px;
+    background: #2a2d34;
+    flex: 0 0 auto;
+  }
+  .result .noposter {
+    width: 34px;
+    height: 50px;
+    border-radius: 4px;
+    background: #2a2d34;
+    flex: 0 0 auto;
+  }
+  .result .info { flex: 1; min-width: 0; }
+  .result .title { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .result .sub { font-size: 12px; opacity: .6; }
+  .badge {
+    flex: 0 0 auto;
+    font-size: 10px;
+    padding: 3px 6px;
+    border-radius: 4px;
+    background: #2a2d34;
+    opacity: .8;
+  }
+  .badge.tv { background: #26323a; }
+  #empty { font-size: 13px; opacity: .5; text-align: center; padding: 10px; }
+
+  .sectionLabel { font-size: 12px; opacity: .55; text-transform: uppercase; letter-spacing: .04em; margin: 4px 0 8px; }
+  .progressTrack { height: 3px; background: #2a2d34; border-radius: 2px; margin-top: 4px; overflow: hidden; }
+  .progressFill { height: 100%; background: #d4af37; }
+</style>
+</head>
+<body>
+<h1>🎬 Movie Remote</h1>
+<div id="status">loading…</div>
+
+<div class="row">
+  <button id="back10">⏪ 10s</button>
+  <button id="toggle" class="primary">⏯</button>
+  <button id="fwd10">10s ⏩</button>
+</div>
+<div class="row">
+  <button id="stop" class="danger">⏹ Stop</button>
+</div>
+<div id="msg"></div>
+
+<div class="divider"></div>
+
+<div id="onDeck" style="width:100%;max-width:360px;">
+  <div class="sectionLabel">Continue Watching</div>
+  <div id="onDeckResults"></div>
+</div>
+
+<div class="divider"></div>
+
+<div id="browse">
+  <div id="searchRow">
+    <input id="searchInput" type="text" placeholder="Search movies &amp; shows…">
+    <button id="searchBtn">🔎</button>
+  </div>
+  <div id="breadcrumb"></div>
+  <div id="results"></div>
+</div>
+
+<script>
+const statusEl = document.getElementById('status');
+const msgEl = document.getElementById('msg');
+const resultsEl = document.getElementById('results');
+const breadcrumbEl = document.getElementById('breadcrumb');
+const onDeckResultsEl = document.getElementById('onDeckResults');
+let lastState = null;
+
+// Browse state: 'search' results, or drilled into a show's seasons, or a
+// season's episodes. Kept simple/flat since the drill-down is only ever
+// two levels deep (show -> season -> episode).
+let view = { kind: 'search', showTitle: null, showKey: null, seasonTitle: null };
+
+function fmt(ms) {
+  if (ms == null) return '--:--';
+  const s = Math.floor(ms / 1000);
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  const mm = String(m).padStart(h ? 2 : 1, '0'), ss = String(sec).padStart(2, '0');
+  return h ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
+async function refresh() {
+  try {
+    const resp = await fetch('/api/mpv/status');
+    if (!resp.ok) throw new Error(resp.status);
+    const data = await resp.json();
+    lastState = data.state;
+    if (!data.state || data.state === 'stopped') {
+      statusEl.textContent = 'Nothing playing';
+    } else {
+      const label = data.state === 'paused' ? 'Paused' : 'Playing';
+      statusEl.textContent = `${label} — ${fmt(data.time_ms)} / ${fmt(data.duration_ms)}`;
+    }
+  } catch (e) {
+    statusEl.textContent = 'Can’t reach the player';
+  }
+}
+
+async function action(path, opts) {
+  msgEl.textContent = '';
+  try {
+    const resp = await fetch(path, Object.assign({ method: 'POST' }, opts || {}));
+    if (!resp.ok) {
+      const detail = await resp.json().catch(() => ({}));
+      msgEl.textContent = detail.detail || `Failed (${resp.status})`;
+    }
+    return resp.ok;
+  } catch (e) {
+    msgEl.textContent = 'Request failed';
+    return false;
+  } finally {
+    refresh();
+  }
+}
+
+document.getElementById('toggle').onclick = () => {
+  action(lastState === 'paused' ? '/api/mpv/resume' : '/api/mpv/pause');
+};
+document.getElementById('back10').onclick = () => action('/api/mpv/seek', {
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ delta_seconds: -10 }),
+});
+document.getElementById('fwd10').onclick = () => action('/api/mpv/seek', {
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ delta_seconds: 10 }),
+});
+document.getElementById('stop').onclick = () => action('/api/mpv/stop');
+
+function posterOrBlank(item) {
+  if (item.poster_url) {
+    const img = document.createElement('img');
+    img.src = item.poster_url;
+    img.alt = '';
+    return img;
+  }
+  const div = document.createElement('div');
+  div.className = 'noposter';
+  return div;
+}
+
+function renderBreadcrumb() {
+  breadcrumbEl.innerHTML = '';
+  if (view.kind === 'search') {
+    breadcrumbEl.style.display = 'none';
+    return;
+  }
+  breadcrumbEl.style.display = 'flex';
+  const backBtn = document.createElement('button');
+  backBtn.textContent = '← Back';
+  backBtn.onclick = () => {
+    if (view.kind === 'episodes') {
+      view = { kind: 'seasons', showTitle: view.showTitle, showKey: view.showKey, seasonTitle: null };
+      loadSeasons(view.showKey, view.showTitle);
+    } else {
+      view = { kind: 'search', showTitle: null, showKey: null, seasonTitle: null };
+      renderResults([]);
+      searchInput.focus();
+    }
+  };
+  breadcrumbEl.appendChild(backBtn);
+  const label = document.createElement('span');
+  label.textContent = view.kind === 'episodes' ? `${view.showTitle} — ${view.seasonTitle}` : view.showTitle;
+  breadcrumbEl.appendChild(label);
+}
+
+function buildResultRow(item, onClick) {
+  const row = document.createElement('div');
+  row.className = 'result';
+  row.appendChild(posterOrBlank(item));
+
+  const info = document.createElement('div');
+  info.className = 'info';
+  const title = document.createElement('div');
+  title.className = 'title';
+  title.textContent = item.title;
+  info.appendChild(title);
+  const sub = document.createElement('div');
+  sub.className = 'sub';
+  if (item.type === 'movie') sub.textContent = item.year || '';
+  else if (item.type === 'show') sub.textContent = item.year ? `TV series · ${item.year}` : 'TV series';
+  else if (item.type === 'season') sub.textContent = `Season ${item.index ?? ''}`;
+  else if (item.type === 'episode') sub.textContent = `Episode ${item.index ?? ''}`;
+  info.appendChild(sub);
+
+  if (item.duration_ms) {
+    const track = document.createElement('div');
+    track.className = 'progressTrack';
+    const fill = document.createElement('div');
+    fill.className = 'progressFill';
+    const pct = Math.min(100, Math.round((100 * (item.view_offset_ms || 0)) / item.duration_ms));
+    fill.style.width = pct + '%';
+    track.appendChild(fill);
+    info.appendChild(track);
+  }
+
+  row.appendChild(info);
+
+  if (item.type === 'show') {
+    const badge = document.createElement('span');
+    badge.className = 'badge tv';
+    badge.textContent = 'TV';
+    row.appendChild(badge);
+  }
+
+  row.onclick = onClick;
+  return row;
+}
+
+function renderResults(items) {
+  resultsEl.innerHTML = '';
+  if (!items.length) {
+    const empty = document.createElement('div');
+    empty.id = 'empty';
+    empty.textContent = view.kind === 'search' ? 'No matches.' : 'Nothing here.';
+    resultsEl.appendChild(empty);
+    return;
+  }
+  for (const item of items) {
+    resultsEl.appendChild(buildResultRow(item, () => handlePick(item)));
+  }
+}
+
+async function loadOnDeck() {
+  onDeckResultsEl.innerHTML = '<div id="empty">Loading…</div>';
+  try {
+    const resp = await fetch('/api/mpv/on-deck');
+    const items = resp.ok ? await resp.json() : [];
+    onDeckResultsEl.innerHTML = '';
+    if (!items.length) {
+      const empty = document.createElement('div');
+      empty.id = 'empty';
+      empty.textContent = 'Nothing in progress.';
+      onDeckResultsEl.appendChild(empty);
+      return;
+    }
+    for (const item of items) {
+      onDeckResultsEl.appendChild(
+        buildResultRow(item, async () => {
+          msgEl.textContent = `Resuming ${item.title}…`;
+          const ok = await action('/api/mpv/play-item', {
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ rating_key: item.rating_key, offset_ms: item.view_offset_ms || 0 }),
+          });
+          msgEl.textContent = ok ? `Resumed ${item.title}` : msgEl.textContent;
+        })
+      );
+    }
+  } catch (e) {
+    onDeckResultsEl.innerHTML = '<div id="empty">Couldn’t load.</div>';
+  }
+}
+
+async function handlePick(item) {
+  if (item.type === 'movie' || item.type === 'episode') {
+    msgEl.textContent = `Starting ${item.title}…`;
+    const ok = await action('/api/mpv/play-item', {
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ rating_key: item.rating_key }),
+    });
+    msgEl.textContent = ok ? `Started ${item.title}` : msgEl.textContent;
+    return;
+  }
+  if (item.type === 'show') {
+    view = { kind: 'seasons', showTitle: item.title, showKey: item.rating_key, seasonTitle: null };
+    loadSeasons(item.rating_key, item.title);
+    return;
+  }
+  if (item.type === 'season') {
+    view = { kind: 'episodes', showTitle: view.showTitle, showKey: view.showKey, seasonTitle: item.title };
+    loadEpisodes(item.rating_key);
+  }
+}
+
+async function loadSeasons(ratingKey, showTitle) {
+  renderBreadcrumb();
+  resultsEl.innerHTML = '<div id="empty">Loading…</div>';
+  const resp = await fetch(`/api/mpv/children/${ratingKey}`);
+  const items = resp.ok ? await resp.json() : [];
+  renderResults(items);
+}
+
+async function loadEpisodes(seasonRatingKey) {
+  renderBreadcrumb();
+  resultsEl.innerHTML = '<div id="empty">Loading…</div>';
+  const resp = await fetch(`/api/mpv/children/${seasonRatingKey}`);
+  const items = resp.ok ? await resp.json() : [];
+  renderResults(items);
+}
+
+let searchDebounce = null;
+const searchInput = document.getElementById('searchInput');
+function doSearch() {
+  const q = searchInput.value.trim();
+  view = { kind: 'search', showTitle: null, showKey: null, seasonTitle: null };
+  renderBreadcrumb();
+  if (!q) { renderResults([]); return; }
+  resultsEl.innerHTML = '<div id="empty">Searching…</div>';
+  fetch(`/api/mpv/search?q=${encodeURIComponent(q)}`)
+    .then(r => r.ok ? r.json() : [])
+    .then(renderResults)
+    .catch(() => renderResults([]));
+}
+searchInput.addEventListener('input', () => {
+  clearTimeout(searchDebounce);
+  searchDebounce = setTimeout(doSearch, 400);
+});
+document.getElementById('searchBtn').onclick = doSearch;
+searchInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { clearTimeout(searchDebounce); doSearch(); } });
+
+refresh();
+loadOnDeck();
+setInterval(refresh, 2000);
+</script>
+</body>
+</html>

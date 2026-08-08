@@ -3,7 +3,7 @@ import datetime
 import discord
 from discord import app_commands
 
-from . import gating, leveling, moderation, movie_night, release_digest, theming, xp_store
+from . import gating, leveling, moderation, movie_night, mpv_control, release_digest, theming, xp_store
 from .calendar_embeds import build_upcoming_embed
 from .config import settings
 from .logger import log
@@ -202,7 +202,7 @@ async def warn_command(interaction: discord.Interaction, member: discord.Member,
     await interaction.response.send_message(f"⚠️ Warned {member.mention}.{note}", ephemeral=True)
 
 
-@tree.command(name="refresh-calendar", description="Mod-only: post the release calendar to #movie-releases/#tv-releases/#anime-releases right now (testing)")
+@tree.command(name="refresh-calendar", description="Mod-only: post the release calendar to its channels right now (testing)")
 @app_commands.checks.has_permissions(manage_guild=True)
 async def refresh_calendar_command(interaction: discord.Interaction) -> None:
     await interaction.response.defer(ephemeral=True)
@@ -224,6 +224,127 @@ async def movie_night_play_command(interaction: discord.Interaction) -> None:
     await interaction.response.defer(ephemeral=True)
     started = await movie_night.force_winner_now(interaction.guild)
     await interaction.followup.send("✅ Announced in #general and sent to Neko." if started else "⚠️ Couldn't start it — check the log (need at least 1 downloaded movie).", ephemeral=True)
+
+
+def _is_movie_night_dj(interaction: discord.Interaction) -> bool:
+    """Manage Server always works; the configurable DJ role (see /setup's
+    Movie Night section) extends the same privilege to specific people
+    without handing them full mod permissions.
+
+    Accepts either the role's numeric ID or its plain name (case-insensitive)
+    — confirmed live that people naturally type the name (e.g. "Commander"),
+    and a numeric-only parse crashed the whole command for everyone with the
+    role instead of just falling back to a name match.
+    """
+    if interaction.user.guild_permissions.manage_guild:
+        return True
+    configured = settings.movie_night_dj_role_id.strip()
+    if not configured:
+        return False
+    if configured.isdigit():
+        return any(r.id == int(configured) for r in interaction.user.roles)
+    return any(r.name.lower() == configured.lower() for r in interaction.user.roles)
+
+
+@tree.command(name="play-movie", description="Start playing a specific downloaded movie on the shared Neko browser right now")
+@app_commands.describe(title="Which movie — searches your downloaded library")
+@app_commands.check(_is_movie_night_dj)
+async def play_movie_command(interaction: discord.Interaction, title: str) -> None:
+    await interaction.response.defer(ephemeral=True)
+    await movie_night.play_specific(interaction, title)
+
+
+@tree.command(name="stop-movie", description="Stop whatever's currently playing on the shared Neko browser")
+@app_commands.check(_is_movie_night_dj)
+async def stop_movie_command(interaction: discord.Interaction) -> None:
+    await interaction.response.defer(ephemeral=True)
+    stopped = await movie_night.stop_movie()
+    await interaction.followup.send("⏹️ Stopped." if stopped else "⚠️ Couldn't stop it — check the log.", ephemeral=True)
+
+
+def _fmt_time(ms: int) -> str:
+    total_seconds = ms // 1000
+    h, rem = divmod(total_seconds, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+@tree.command(name="mpv-play", description="Start playing a movie on the neko-mpv player (hardware-accelerated, no on-screen controls)")
+@app_commands.describe(title="Which movie — searches your downloaded library")
+@app_commands.check(_is_movie_night_dj)
+async def mpv_play_command(interaction: discord.Interaction, title: str) -> None:
+    await interaction.response.defer(ephemeral=True)
+    started = await mpv_control.play(title)
+    if not started:
+        await interaction.followup.send(f"Couldn't find **{title}** in the library.", ephemeral=True)
+        return
+    view = discord.ui.View()
+    if settings.neko_mpv_public_url:
+        # This reply is ephemeral — only the DJ who ran the command sees
+        # it — so they get the admin-level auto-login link (?pwd=admin
+        # password&usr=Admin), which is what makes the native admin-only
+        # Playback tab actually appear inside the Neko window (see
+        # neko-mpv/neko-client-patch/side.vue — gated by real Neko admin
+        # status now, not a URL param like the old injected-overlay
+        # approach used).
+        watch_url = mpv_control.admin_link()
+        view.add_item(discord.ui.Button(label="▶️  WATCH LIVE", style=discord.ButtonStyle.link, url=watch_url))
+    if settings.mpv_remote_key:
+        # This reply is ephemeral (only the person who ran the command sees
+        # it), so it's fine to embed the shared secret directly in the link —
+        # same reasoning as the old system's admin_viewer_link. Clicking it
+        # skips the login prompt entirely (see mpv_remote_page in main.py).
+        # Uses its own dedicated plain-alphanumeric token (not a real
+        # password) specifically so auto-linkifiers never truncate it.
+        remote_url = f"{settings.servarr_public_url}/mpv-remote?key={settings.mpv_remote_key}"
+        view.add_item(discord.ui.Button(label="🎮  REMOTE CONTROLS", style=discord.ButtonStyle.link, url=remote_url))
+    await interaction.followup.send(
+        f"Starting **{title}**… use `/mpv-pause`, `/mpv-seek`, `/mpv-stop`, or the remote link above to control it.",
+        view=view if view.children else None,
+        ephemeral=True,
+    )
+
+
+@tree.command(name="mpv-pause", description="Pause the neko-mpv player")
+@app_commands.check(_is_movie_night_dj)
+async def mpv_pause_command(interaction: discord.Interaction) -> None:
+    await interaction.response.defer(ephemeral=True)
+    ok = await mpv_control.pause()
+    await interaction.followup.send("⏸️ Paused." if ok else "⚠️ Nothing's playing right now.", ephemeral=True)
+
+
+@tree.command(name="mpv-resume", description="Resume the neko-mpv player")
+@app_commands.check(_is_movie_night_dj)
+async def mpv_resume_command(interaction: discord.Interaction) -> None:
+    await interaction.response.defer(ephemeral=True)
+    ok = await mpv_control.resume()
+    await interaction.followup.send("▶️ Resumed." if ok else "⚠️ Nothing's paused right now.", ephemeral=True)
+
+
+@tree.command(name="mpv-seek", description="Jump forward or back in the neko-mpv player")
+@app_commands.describe(direction="Which way", seconds="How many seconds (default 10)")
+@app_commands.choices(direction=[
+    app_commands.Choice(name="back", value="back"),
+    app_commands.Choice(name="forward", value="forward"),
+])
+@app_commands.check(_is_movie_night_dj)
+async def mpv_seek_command(interaction: discord.Interaction, direction: app_commands.Choice[str], seconds: int = 10) -> None:
+    await interaction.response.defer(ephemeral=True)
+    delta = seconds if direction.value == "forward" else -seconds
+    position_seconds = await mpv_control.seek(delta)
+    if position_seconds is None:
+        await interaction.followup.send("⚠️ Nothing's loaded right now.", ephemeral=True)
+        return
+    arrow = "⏩" if delta > 0 else "⏪"
+    await interaction.followup.send(f"{arrow} Now at {_fmt_time(position_seconds * 1000)}.", ephemeral=True)
+
+
+@tree.command(name="mpv-stop", description="Stop the neko-mpv player")
+@app_commands.check(_is_movie_night_dj)
+async def mpv_stop_command(interaction: discord.Interaction) -> None:
+    await interaction.response.defer(ephemeral=True)
+    ok = await mpv_control.stop()
+    await interaction.followup.send("⏹️ Stopped." if ok else "⚠️ Couldn't stop it — check the log.", ephemeral=True)
 
 
 @tree.command(name="help", description="List everything this server's bots can do")
@@ -249,6 +370,16 @@ async def help_command(interaction: discord.Interaction) -> None:
         inline=False,
     )
     embed.add_field(
+        name="🍿 Movie Night (Servarr)",
+        value="`/play-movie <title>` — pick a downloaded movie and start it on the shared watch-party browser right now (whoever runs it also gets a private control link). `/stop-movie` — stop whatever's currently playing. Both need Manage Server or the Movie Night DJ role.",
+        inline=False,
+    )
+    embed.add_field(
+        name="🎮 Movie Night (hardware player, experimental)",
+        value="`/mpv-play <title>` `/mpv-pause` `/mpv-resume` `/mpv-seek <back/forward> [seconds]` `/mpv-stop` — same permissions as above. This player has no on-screen controls at all, so these (or the remote page) are the only way to control it.",
+        inline=False,
+    )
+    embed.add_field(
         name="🛡️ Moderator-only (Servarr)",
         value="`/kick` `/ban` `/timeout` `/warn` `/setup-server` — each requires the matching real Discord permission on your account.",
         inline=False,
@@ -260,7 +391,7 @@ async def help_command(interaction: discord.Interaction) -> None:
 
 @tree.error
 async def on_tree_error(interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
-    if isinstance(error, app_commands.MissingPermissions):
+    if isinstance(error, (app_commands.MissingPermissions, app_commands.CheckFailure)):
         await interaction.response.send_message("You don't have permission to do that.", ephemeral=True)
         return
     await log(f"bot: command error: {error}")
