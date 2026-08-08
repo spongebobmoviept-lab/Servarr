@@ -62,6 +62,32 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="Servarr", lifespan=lifespan)
 
 
+@app.middleware("http")
+async def allow_private_network_embed(request: Request, call_next):
+    """Lets the native Playback tab's iframe (see neko-mpv/neko-client-
+    patch/playback.vue) load /mpv-remote at all when Neko itself was opened
+    via its public address — confirmed live that without this, Chromium's
+    Private Network Access check silently blocks the request with no
+    server-side error to point at, since it classifies the embedding page
+    (loaded from a public IP) as "public" and this server's address as
+    "private", and refuses the cross-tier request unless explicitly told
+    it's fine. Origin-agnostic (reflects whatever Origin sent the request)
+    since this is a home-lab tool, not something serving untrusted traffic.
+    """
+    if request.method == "OPTIONS":
+        response = Response(status_code=200)
+    else:
+        response = await call_next(request)
+    origin = request.headers.get("origin")
+    if origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Credentials"] = "true"
+    response.headers["Access-Control-Allow-Methods"] = "*"
+    response.headers["Access-Control-Allow-Headers"] = "*"
+    response.headers["Access-Control-Allow-Private-Network"] = "true"
+    return response
+
+
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok"}
@@ -279,6 +305,18 @@ async def api_mpv_children(rating_key: str, _: str = Depends(require_login_or_re
     to a specific episode.
     """
     return JSONResponse(await plex.get_show_children(rating_key))
+
+
+@app.get("/api/mpv/poster/{rating_key}")
+async def api_mpv_poster(rating_key: str, _: str = Depends(require_login_or_remote_key)) -> Response:
+    """Proxies a poster/thumbnail through Servarr instead of linking to
+    Plex directly — see plex._poster_url for why (breaks from outside the
+    house, exposes the Plex token in page HTML otherwise). A plain <img>
+    tag sends the same cookie/key auth as everything else on this page
+    automatically, since this is a same-origin relative URL.
+    """
+    image_bytes, content_type = await plex.get_poster_bytes(rating_key)
+    return Response(content=image_bytes, media_type=content_type, headers={"Cache-Control": "private, max-age=3600"})
 
 
 @app.get("/api/mpv/sections")

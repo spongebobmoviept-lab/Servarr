@@ -71,10 +71,29 @@ _MIN_SIMILARITY = 0.55
 
 
 def _poster_url(item: dict) -> Optional[str]:
-    thumb = item.get("thumb")
-    if not thumb:
+    """A relative URL (proxied through Servarr's own /api/mpv/poster
+    endpoint, see get_poster_bytes) rather than a direct Plex URL —
+    confirmed live that a direct link (Plex's LAN address, with the token
+    embedded in it) breaks entirely from outside the house, and even on
+    LAN just needlessly exposes the token in the page's own HTML/network
+    tab. Being relative also means it automatically resolves against
+    whichever origin the page itself was loaded from (LAN or public),
+    with no separate reachability logic needed the way the Playback tab's
+    iframe URL requires.
+    """
+    if not item.get("thumb") or not item.get("ratingKey"):
         return None
-    return f"{settings.plex_url}{thumb}?X-Plex-Token={settings.plex_token}"
+    return f"/api/mpv/poster/{item['ratingKey']}"
+
+
+async def get_poster_bytes(rating_key: str) -> tuple[bytes, str]:
+    async with httpx.AsyncClient(base_url=settings.plex_url, timeout=15) as client:
+        resp = await client.get(
+            f"/library/metadata/{rating_key}/thumb",
+            params={"X-Plex-Token": settings.plex_token},
+        )
+        resp.raise_for_status()
+        return resp.content, resp.headers.get("content-type", "image/jpeg")
 
 
 async def get_machine_id() -> str:
