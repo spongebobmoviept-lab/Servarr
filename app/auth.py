@@ -64,10 +64,22 @@ def require_login_or_remote_key(
     (see mpv_remote_page/bot.py's mpv-play command) instead of a Basic Auth
     popup — checks against its own dedicated settings.mpv_remote_key (a
     plain alphanumeric token, not a reused password — see config.py for why).
+
+    Checks the cookie first (works fine for the standalone page, opened
+    top-level), then a `key` query param as a fallback — confirmed live
+    that the cookie alone breaks entirely on Safari when this page is
+    loaded inside the native Playback tab's iframe, since Safari blocks
+    cookies in third-party iframe contexts by default with no user-facing
+    setting to change. mpv-remote.html's own JS carries the key explicitly
+    on every request specifically so this fallback gets used there,
+    working identically regardless of cookie support.
+
     Falls back to the normal admin login for anyone who navigates to the
-    page directly (bookmarked, no key cookie yet).
+    page directly with neither (bookmarked, no key at all).
     """
     if settings.mpv_remote_key and request.cookies.get(MPV_REMOTE_COOKIE) == settings.mpv_remote_key:
+        return "remote-key"
+    if settings.mpv_remote_key and request.query_params.get("key") == settings.mpv_remote_key:
         return "remote-key"
     if credentials is not None:
         return check_credentials(request, credentials)
