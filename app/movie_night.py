@@ -50,6 +50,78 @@ def _is_dj_member(member: discord.Member) -> bool:
     return any(r.name.lower() == configured.lower() for r in member.roles)
 
 
+def _require_dj(handler):
+    """Wraps a button callback so only a DJ/mod can actually trigger it —
+    same permission as /mpv-pause etc. (which still work fine on their
+    own; these buttons are an additional, lower-friction way to reach the
+    same mpv_control functions from the Now Playing message itself).
+    Anyone else gets a quiet ephemeral no instead of the action running.
+    """
+
+    async def wrapped(interaction: discord.Interaction) -> None:
+        if not _is_dj_member(interaction.user):
+            await interaction.response.send_message("Only a Movie Night DJ/mod can control playback.", ephemeral=True)
+            return
+        await handler(interaction)
+
+    return wrapped
+
+
+def add_transport_buttons(view: discord.ui.View) -> None:
+    """Real clickable pause/seek/stop controls on the Now Playing message
+    itself, next to the WATCH LIVE link button — not just slash commands.
+    """
+
+    @_require_dj
+    async def _pause_resume(interaction: discord.Interaction) -> None:
+        status = await mpv_control.get_status()
+        if status["state"] == "playing":
+            await mpv_control.pause()
+            await interaction.response.send_message("⏸️ Paused.", ephemeral=True)
+        elif status["state"] == "paused":
+            await mpv_control.resume()
+            await interaction.response.send_message("▶️ Resumed.", ephemeral=True)
+        else:
+            await interaction.response.send_message("Nothing's playing right now.", ephemeral=True)
+
+    @_require_dj
+    async def _seek_back(interaction: discord.Interaction) -> None:
+        position = await mpv_control.seek(-10)
+        if position is None:
+            await interaction.response.send_message("Nothing's loaded right now.", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"⏪ Now at {position // 60}:{position % 60:02d}.", ephemeral=True)
+
+    @_require_dj
+    async def _seek_fwd(interaction: discord.Interaction) -> None:
+        position = await mpv_control.seek(10)
+        if position is None:
+            await interaction.response.send_message("Nothing's loaded right now.", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"⏩ Now at {position // 60}:{position % 60:02d}.", ephemeral=True)
+
+    @_require_dj
+    async def _stop(interaction: discord.Interaction) -> None:
+        ok = await mpv_control.stop()
+        await interaction.response.send_message("⏹️ Stopped." if ok else "⚠️ Couldn't stop it.", ephemeral=True)
+
+    pause_btn = discord.ui.Button(label="⏯", style=discord.ButtonStyle.secondary, row=1)
+    pause_btn.callback = _pause_resume
+    view.add_item(pause_btn)
+
+    back_btn = discord.ui.Button(label="⏪ 10s", style=discord.ButtonStyle.secondary, row=1)
+    back_btn.callback = _seek_back
+    view.add_item(back_btn)
+
+    fwd_btn = discord.ui.Button(label="10s ⏩", style=discord.ButtonStyle.secondary, row=1)
+    fwd_btn.callback = _seek_fwd
+    view.add_item(fwd_btn)
+
+    stop_btn = discord.ui.Button(label="⏹ Stop", style=discord.ButtonStyle.danger, row=1)
+    stop_btn.callback = _stop
+    view.add_item(stop_btn)
+
+
 async def _dm_admin_links(guild: discord.Guild) -> None:
     """Automatically hands every DJ/mod their personal admin control link
     the moment tonight's movie starts — a single Discord message can't show
@@ -163,6 +235,7 @@ async def announce_winner(guild: discord.Guild, is_test: bool = False) -> bool:
         # password and show them the control tab).
         view = discord.ui.View()
         view.add_item(discord.ui.Button(label="▶️  WATCH LIVE", style=discord.ButtonStyle.link, url=mpv_control.viewer_link()))
+        add_transport_buttons(view)
     else:
         search_url = "https://app.plex.tv/desktop#!/search?query=" + urllib.parse.quote(winner.title)
         embed.description = (
@@ -221,6 +294,7 @@ async def play_now(channel: discord.abc.Messageable, movie: "radarr.LibraryMovie
         embed.description = f"**{movie.title}**" + (f" ({movie.year})" if movie.year else "") + "\nIt's already loading up, click below to watch together!"
         view = discord.ui.View()
         view.add_item(discord.ui.Button(label="▶️  WATCH LIVE", style=discord.ButtonStyle.link, url=mpv_control.viewer_link()))
+        add_transport_buttons(view)
     else:
         search_url = "https://app.plex.tv/desktop#!/search?query=" + urllib.parse.quote(movie.title)
         embed.description = f"**{movie.title}**" + (f" ({movie.year})" if movie.year else "") + "\nCouldn't start it automatically — grab it yourself in Plex instead."
