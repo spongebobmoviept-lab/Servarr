@@ -83,6 +83,43 @@ async def get_machine_id() -> str:
         return identity.json()["MediaContainer"]["machineIdentifier"]
 
 
+async def list_sections() -> list[dict]:
+    """Movie/show library sections — kept separate rather than collapsed by
+    type, since e.g. "TV Shows" and "Anime" are both type=show but are
+    real distinct sections a user would want to browse independently.
+    """
+    async with _client() as client:
+        resp = await client.get("/library/sections", params={"X-Plex-Token": settings.plex_token})
+    return [
+        {"key": s["key"], "title": s.get("title", ""), "type": s.get("type")}
+        for s in resp.json()["MediaContainer"].get("Directory", [])
+        if s.get("type") in ("movie", "show")
+    ]
+
+
+async def browse_section(section_key: str, limit: int = 30, offset: int = 0) -> list[dict]:
+    """Recently-added browse view for one library section — reuses the
+    same cached full-section fetch search_library already relies on
+    (see _section_items), so paging through this stays fast/light after
+    the first request for a given section instead of hitting Plex again
+    on every page.
+    """
+    async with _client() as client:
+        items = await _section_items(client, section_key)
+    items = sorted(items, key=lambda c: c.get("addedAt", 0), reverse=True)
+    page = items[offset : offset + limit]
+    return [
+        {
+            "rating_key": c["ratingKey"],
+            "title": c.get("title", ""),
+            "year": c.get("year"),
+            "type": c.get("type"),
+            "poster_url": _poster_url(c),
+        }
+        for c in page
+    ]
+
+
 async def resolve_library_item(title: str, year: Optional[int] = None) -> Optional[dict]:
     """Resolves a title to its exact item in one of OUR OWN movie library
     sections — used so playback automation never has to guess between our
@@ -214,53 +251,6 @@ async def get_on_deck(limit: int = 10) -> list[dict]:
     return results
 
 
-async def is_title_playing(title: str) -> bool:
-    """Ground truth for whether a specific title actually started playing —
-    used right after the automation clicks Play, since the click itself
-    could silently land wrong."""
-    async with _client() as client:
-        resp = await client.get("/status/sessions", params={"X-Plex-Token": settings.plex_token})
-        resp.raise_for_status()
-        data = resp.json()
-    for item in data.get("MediaContainer", {}).get("Metadata", []) or []:
-        if item.get("title") == title:
-            return True
-    return False
-
-
-async def terminate_client_sessions(machine_identifier: str) -> None:
-    """Explicitly ends any session belonging to our own Plex Desktop client
-    (identified by its own persisted clientID, read from plex.ini) rather
-    than trusting it to time out on its own — forcibly restarting that
-    client (see neko_control's debug-port toggle) kills the player process
-    abruptly without ever telling Plex the session ended, and confirmed
-    live this can leave a duplicate/orphaned entry in /status/sessions.
-    Called before and after every automated playback so nothing lingers
-    regardless of how the previous run ended. Never touches other people's
-    real sessions (Apple TV, phones, etc.) — only ones matching our own
-    client's machine identifier.
-    """
-    async with _client() as client:
-        resp = await client.get("/status/sessions", params={"X-Plex-Token": settings.plex_token})
-        resp.raise_for_status()
-        sessions = resp.json().get("MediaContainer", {}).get("Metadata", []) or []
-        for item in sessions:
-            player = item.get("Player") or {}
-            if player.get("machineIdentifier") != machine_identifier:
-                continue
-            session_id = (item.get("Session") or {}).get("id")
-            if not session_id:
-                continue
-            await client.get(
-                "/status/sessions/terminate",
-                params={
-                    "sessionId": session_id,
-                    "reason": "Movie Night automation restarting the player",
-                    "X-Plex-Token": settings.plex_token,
-                },
-            )
-
-
 async def test_connection(url: str, token: str) -> dict:
     """Ad-hoc connectivity check for the setup wizard, using credentials the
     caller just typed in rather than whatever's already saved."""
@@ -271,30 +261,3 @@ async def test_connection(url: str, token: str) -> dict:
     sections = data.get("MediaContainer", {}).get("Directory", [])
     movie_libraries = [s.get("title") for s in sections if s.get("type") == "movie"]
     return {"library_count": len(sections), "movie_libraries": movie_libraries}
-
-
-async def is_client_playing(machine_identifier: str) -> bool:
-    """Checked right after neko_control clicks resume — ground truth from
-    Plex's own session list is the only reliable way to know the click
-    actually worked, since a blind retry could just as easily toggle a
-    genuinely-already-playing session back into paused.
-
-    Checks for a positive "at least one session is playing" signal rather
-    than "is any session paused", and deliberately doesn't require there to
-    be exactly one session for our client — forcibly restarting the player
-    process (see _restart_plex_desktop) can leave duplicate/zombie entries
-    behind that _cleanup_stale_sessions doesn't always catch (some have no
-    Session.id at all, which Plex's own /status/sessions/terminate has no
-    way to target), confirmed live. Checking for "paused" instead used to
-    false-negative forever whenever one of those zombies happened to still
-    say paused, even though the real session had already started fine.
-    """
-    async with _client() as client:
-        resp = await client.get("/status/sessions", params={"X-Plex-Token": settings.plex_token})
-        resp.raise_for_status()
-        data = resp.json()
-    for item in data.get("MediaContainer", {}).get("Metadata", []) or []:
-        player = item.get("Player") or {}
-        if player.get("machineIdentifier") == machine_identifier and player.get("state") == "playing":
-            return True
-    return False

@@ -258,10 +258,10 @@
         </div>
       </section>
 
-      <!-- Step 5: Reclaimarr + Neko (Movie Night) -->
+      <!-- Step 5: Reclaimarr (Movie Night) -->
       <section class="step" data-step="5">
         <h2>Movie Night <span class="optional-badge">optional</span></h2>
-        <p class="sub">Only needed if you want the automated daily vote + shared-browser playback. Skip this whole step otherwise.</p>
+        <p class="sub">Only needed if you want the automated daily vote + playback. Skip this whole step otherwise.</p>
 
         <div class="section-title">Reclaimarr</div>
         <p class="field-hint" style="margin-top:-0.5rem;">So a Movie Night pick doesn't get interrupted by a surprise 4K swap mid-movie.</p>
@@ -273,17 +273,7 @@
         <input type="password" id="reclaimarr-pass" autocomplete="off" />
         <div class="result" id="result-reclaimarr"></div>
 
-        <div class="section-title">Neko (shared browser)</div>
-        <p class="field-hint" style="margin-top:-0.5rem;">The self-hosted shared browser Movie Night drives to actually start playback. See its own README for how to stand it up.</p>
-        <label for="neko-url">Neko URL (internal/LAN)</label>
-        <input type="url" id="neko-url" placeholder="http://192.168.1.50:8090" />
-        <label for="neko-public-url">Neko public URL <span class="optional-badge">optional</span></label>
-        <input type="url" id="neko-public-url" placeholder="Leave blank to reuse the URL above" />
-        <label for="neko-admin-password">Neko admin password</label>
-        <input type="password" id="neko-admin-password" autocomplete="off" />
-        <label for="plex-home-pin">Plex Home PIN <span class="optional-badge">optional</span></label>
-        <input type="text" id="plex-home-pin" placeholder="Only if the Plex profile Neko logs in as has a PIN lock" />
-        <div class="result" id="result-neko"></div>
+        <p class="field-hint">The actual player (neko-mpv) is configured through its own .env, not here — see its README.</p>
 
         <div class="actions">
           <button class="btn btn-ghost" data-back="4">Back</button>
@@ -348,7 +338,7 @@
   let currentStep = 1;
   let authToken = null;
   let editMode = false;
-  const state = { discord: false, radarr: false, sonarr: false, plex: false, tautulli: false, reclaimarr: false, neko: false };
+  const state = { discord: false, radarr: false, sonarr: false, plex: false, tautulli: false, reclaimarr: false };
 
   function $(sel) { return document.querySelector(sel); }
 
@@ -550,7 +540,7 @@
     }
   });
 
-  // ---- Step 5: Reclaimarr + Neko ----
+  // ---- Step 5: Reclaimarr (Movie Night) ----
   $("#btn-5-next").addEventListener("click", async () => {
     const btn = $("#btn-5-next");
     setBusy(btn, true);
@@ -575,31 +565,10 @@
       return;
     }
     try {
-      const nekoUrl = $("#neko-url").value.trim().replace(/\/$/, "");
-      const nekoPublicUrl = $("#neko-public-url").value.trim().replace(/\/$/, "");
-      const nekoPassword = $("#neko-admin-password").value;
-      if (nekoUrl && (nekoPassword || state.neko)) {
-        if (changedFrom($("#neko-admin-password")) || nekoUrl !== ($("#neko-url").dataset.original || "")) {
-          await api("/api/setup/test-neko", { method: "POST", body: { url: nekoUrl, admin_password: nekoPassword } });
-          showResult("neko", true, "Connected.");
-        }
-        update.neko_url = nekoUrl;
-        if (nekoPublicUrl) update.neko_public_url = nekoPublicUrl;
-        if (changedFrom($("#neko-admin-password"))) update.neko_admin_password = nekoPassword;
-        state.neko = true;
-      }
-      const pin = $("#plex-home-pin").value.trim();
-      if (changedFrom($("#plex-home-pin"))) update.plex_home_pin = pin;
-    } catch (e) {
-      showResult("neko", false, e.message);
-      setBusy(btn, false);
-      return;
-    }
-    try {
       if (Object.keys(update).length) await api("/api/connections", { method: "POST", body: update });
       goToStep(6);
     } catch (e) {
-      showResult("neko", false, e.message);
+      showResult("reclaimarr", false, e.message);
     } finally {
       setBusy(btn, false);
     }
@@ -639,7 +608,7 @@
       ["Sonarr", state.sonarr],
       ["Plex", state.plex],
       ["Tautulli", state.tautulli],
-      ["Movie Night (Reclaimarr + Neko)", state.reclaimarr && state.neko],
+      ["Movie Night (Reclaimarr)", state.reclaimarr],
       ["Advanced settings", true],
     ];
     $("#summary").innerHTML = rows
@@ -695,10 +664,6 @@
     prefillField($("#reclaimarr-url"), connections.reclaimarr_url.value);
     prefillField($("#reclaimarr-user"), connections.reclaimarr_auth_user.value);
     if (connections.reclaimarr_auth_pass.is_set) { $("#reclaimarr-pass").placeholder = connections.reclaimarr_auth_pass.value; state.reclaimarr = true; }
-    prefillField($("#neko-url"), connections.neko_url.value);
-    prefillField($("#neko-public-url"), connections.neko_public_url.value);
-    if (connections.neko_admin_password.is_set) { $("#neko-admin-password").placeholder = connections.neko_admin_password.value; state.neko = true; }
-    if (connections.plex_home_pin.is_set) { $("#plex-home-pin").placeholder = connections.plex_home_pin.value; }
 
     $("#mn-vote-hour").value = settingsData.movie_night_vote_hour_utc;
     $("#mn-play-hour").value = settingsData.movie_night_hour_utc;

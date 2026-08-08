@@ -118,6 +118,20 @@
   .sectionLabel { font-size: 12px; opacity: .55; text-transform: uppercase; letter-spacing: .04em; margin: 4px 0 8px; }
   .progressTrack { height: 3px; background: #2a2d34; border-radius: 2px; margin-top: 4px; overflow: hidden; }
   .progressFill { height: 100%; background: #d4af37; }
+
+  #sectionPills { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .pill {
+    font-size: 12px;
+    padding: 6px 12px;
+    border-radius: 999px;
+    background: #1c1f24;
+    border: 1px solid #2a2d34;
+    color: #eee;
+    cursor: pointer;
+  }
+  .pill.active { background: #d4af37; color: #14161a; border-color: #d4af37; font-weight: 600; }
+  #loadMoreRow { margin-top: 10px; }
+  #loadMoreRow button { width: 100%; padding: 10px; font-size: 13px; }
 </style>
 </head>
 <body>
@@ -148,8 +162,12 @@
     <input id="searchInput" type="text" placeholder="Search movies &amp; shows…">
     <button id="searchBtn">🔎</button>
   </div>
+  <div id="sectionPills"></div>
   <div id="breadcrumb"></div>
   <div id="results"></div>
+  <div id="loadMoreRow" style="display:none;">
+    <button id="loadMoreBtn">Load more</button>
+  </div>
 </div>
 
 <script>
@@ -160,10 +178,21 @@ const breadcrumbEl = document.getElementById('breadcrumb');
 const onDeckResultsEl = document.getElementById('onDeckResults');
 let lastState = null;
 
-// Browse state: 'search' results, or drilled into a show's seasons, or a
-// season's episodes. Kept simple/flat since the drill-down is only ever
-// two levels deep (show -> season -> episode).
-let view = { kind: 'search', showTitle: null, showKey: null, seasonTitle: null };
+// Browse state: 'search' results, 'browse' (a library section's
+// recently-added list), or drilled into a show's seasons/episodes from
+// either of those. `origin` remembers which one to return to on "back".
+// Kept simple/flat since the drill-down is only ever two levels deep
+// (show -> season -> episode).
+let view = {
+  kind: 'search',
+  origin: 'search',
+  sectionKey: null,
+  sectionTitle: null,
+  offset: 0,
+  showTitle: null,
+  showKey: null,
+  seasonTitle: null,
+};
 
 function fmt(ms) {
   if (ms == null) return '--:--';
@@ -234,7 +263,8 @@ function posterOrBlank(item) {
 
 function renderBreadcrumb() {
   breadcrumbEl.innerHTML = '';
-  if (view.kind === 'search') {
+  loadMoreRowEl.style.display = view.kind === 'browse' ? 'block' : 'none';
+  if (view.kind === 'search' || view.kind === 'browse') {
     breadcrumbEl.style.display = 'none';
     return;
   }
@@ -243,10 +273,12 @@ function renderBreadcrumb() {
   backBtn.textContent = '← Back';
   backBtn.onclick = () => {
     if (view.kind === 'episodes') {
-      view = { kind: 'seasons', showTitle: view.showTitle, showKey: view.showKey, seasonTitle: null };
+      view = Object.assign({}, view, { kind: 'seasons', seasonTitle: null });
       loadSeasons(view.showKey, view.showTitle);
+    } else if (view.origin === 'browse') {
+      selectSection(view.sectionKey, view.sectionTitle);
     } else {
-      view = { kind: 'search', showTitle: null, showKey: null, seasonTitle: null };
+      view = { kind: 'search', origin: 'search', sectionKey: null, sectionTitle: null, offset: 0, showTitle: null, showKey: null, seasonTitle: null };
       renderResults([]);
       searchInput.focus();
     }
@@ -314,6 +346,12 @@ function renderResults(items) {
   }
 }
 
+function appendResults(items) {
+  for (const item of items) {
+    resultsEl.appendChild(buildResultRow(item, () => handlePick(item)));
+  }
+}
+
 async function loadOnDeck() {
   onDeckResultsEl.innerHTML = '<div id="empty">Loading…</div>';
   try {
@@ -355,12 +393,12 @@ async function handlePick(item) {
     return;
   }
   if (item.type === 'show') {
-    view = { kind: 'seasons', showTitle: item.title, showKey: item.rating_key, seasonTitle: null };
+    view = Object.assign({}, view, { kind: 'seasons', showTitle: item.title, showKey: item.rating_key, seasonTitle: null });
     loadSeasons(item.rating_key, item.title);
     return;
   }
   if (item.type === 'season') {
-    view = { kind: 'episodes', showTitle: view.showTitle, showKey: view.showKey, seasonTitle: item.title };
+    view = Object.assign({}, view, { kind: 'episodes', seasonTitle: item.title });
     loadEpisodes(item.rating_key);
   }
 }
@@ -385,8 +423,9 @@ let searchDebounce = null;
 const searchInput = document.getElementById('searchInput');
 function doSearch() {
   const q = searchInput.value.trim();
-  view = { kind: 'search', showTitle: null, showKey: null, seasonTitle: null };
+  view = { kind: 'search', origin: 'search', sectionKey: null, sectionTitle: null, offset: 0, showTitle: null, showKey: null, seasonTitle: null };
   renderBreadcrumb();
+  renderPills();
   if (!q) { renderResults([]); return; }
   resultsEl.innerHTML = '<div id="empty">Searching…</div>';
   fetch(`/api/mpv/search?q=${encodeURIComponent(q)}`)
@@ -399,10 +438,54 @@ searchInput.addEventListener('input', () => {
   searchDebounce = setTimeout(doSearch, 400);
 });
 document.getElementById('searchBtn').onclick = doSearch;
+
+// --- Library browsing (recently-added per section — Movies/TV/Anime are
+// separate Plex sections even though TV+Anime share the same "show" type).
+const sectionPillsEl = document.getElementById('sectionPills');
+const loadMoreRowEl = document.getElementById('loadMoreRow');
+let sections = [];
+
+function renderPills() {
+  sectionPillsEl.innerHTML = '';
+  for (const s of sections) {
+    const pill = document.createElement('button');
+    pill.className = 'pill' + (view.kind === 'browse' && view.sectionKey === s.key ? ' active' : '');
+    pill.textContent = s.title;
+    pill.onclick = () => selectSection(s.key, s.title);
+    sectionPillsEl.appendChild(pill);
+  }
+}
+
+async function loadSections() {
+  try {
+    const resp = await fetch('/api/mpv/sections');
+    sections = resp.ok ? await resp.json() : [];
+    renderPills();
+  } catch (e) { /* pills just won't show */ }
+}
+
+async function selectSection(key, title) {
+  searchInput.value = '';
+  view = { kind: 'browse', origin: 'browse', sectionKey: key, sectionTitle: title, offset: 0, showTitle: null, showKey: null, seasonTitle: null };
+  renderBreadcrumb();
+  renderPills();
+  resultsEl.innerHTML = '<div id="empty">Loading…</div>';
+  const resp = await fetch(`/api/mpv/browse/${key}?offset=0`);
+  const items = resp.ok ? await resp.json() : [];
+  renderResults(items);
+}
+
+document.getElementById('loadMoreBtn').onclick = async () => {
+  view.offset += 30;
+  const resp = await fetch(`/api/mpv/browse/${view.sectionKey}?offset=${view.offset}`);
+  const items = resp.ok ? await resp.json() : [];
+  appendResults(items);
+};
 searchInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') { clearTimeout(searchDebounce); doSearch(); } });
 
 refresh();
 loadOnDeck();
+loadSections();
 setInterval(refresh, 2000);
 </script>
 </body>

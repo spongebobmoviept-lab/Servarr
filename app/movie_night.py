@@ -33,6 +33,46 @@ def _vote_channel(guild: discord.Guild) -> Optional[discord.TextChannel]:
     return discord.utils.get(guild.text_channels, name="general")
 
 
+def _is_dj_member(member: discord.Member) -> bool:
+    """Same rule as bot.py's _is_movie_night_dj, applied to a plain
+    discord.Member instead of an Interaction — needed here to scan every
+    guild member for the nightly DM (see _dm_admin_links), not just check
+    whoever ran a command. Kept as its own copy rather than importing from
+    bot.py to avoid a circular import (bot.py already imports this module).
+    """
+    if member.guild_permissions.manage_guild:
+        return True
+    configured = settings.movie_night_dj_role_id.strip()
+    if not configured:
+        return False
+    if configured.isdigit():
+        return any(r.id == int(configured) for r in member.roles)
+    return any(r.name.lower() == configured.lower() for r in member.roles)
+
+
+async def _dm_admin_links(guild: discord.Guild) -> None:
+    """Automatically hands every DJ/mod their personal admin control link
+    the moment tonight's movie starts — a single Discord message can't show
+    different button URLs to different viewers, so this is the only way
+    for the nightly automated announcement (as opposed to a manual
+    /play-movie run, which already gets this via _send_admin_link) to give
+    Commanders control without them having to ask for it separately.
+    Best-effort per member — a closed-DMs error shouldn't stop the others.
+    """
+    link = mpv_control.admin_link()
+    if not link:
+        return
+    for member in guild.members:
+        if member.bot or not _is_dj_member(member):
+            continue
+        try:
+            await member.send(
+                f"🔑 Tonight's Movie Night admin link (pause/seek/browse) — keep it to yourself: {link}"
+            )
+        except Exception as exc:  # noqa: BLE001
+            await log(f"movie_night: couldn't DM admin link to {member}: {exc}")
+
+
 class VoteView(discord.ui.View):
     """Not persistent across restarts on purpose — each night's candidates
     are different, so there's nothing meaningful to resume after a restart
@@ -132,6 +172,8 @@ async def announce_winner(guild: discord.Guild, is_test: bool = False) -> bool:
     if winner.poster_url:
         embed.set_image(url=winner.poster_url)
     await channel.send(content=None if is_test else "@everyone", embed=embed, view=view)
+    if started and not is_test:
+        await _dm_admin_links(guild)
     _current_vote.clear()
     return True
 

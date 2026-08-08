@@ -11,8 +11,6 @@ PLAIN_KEYS = [
     "tautulli_url",
     "reclaimarr_url",
     "reclaimarr_auth_user",
-    "neko_url",
-    "neko_public_url",
     "plex_url",
 ]
 # Secret fields: never returned in full — masked on read, only overwritten
@@ -23,9 +21,7 @@ SECRET_KEYS = [
     "radarr_api_key",
     "tautulli_api_key",
     "reclaimarr_auth_pass",
-    "neko_admin_password",
     "plex_token",
-    "plex_home_pin",
 ]
 
 ALL_KEYS = PLAIN_KEYS + SECRET_KEYS

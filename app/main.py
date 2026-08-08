@@ -13,7 +13,6 @@ from . import (
     connections_store,
     movie_night,
     mpv_control,
-    neko_control,
     plex,
     plex_monitor,
     radarr,
@@ -189,15 +188,6 @@ async def api_setup_test_reclaimarr(body: dict, _: str = Depends(require_login))
     return JSONResponse(result)
 
 
-@app.post("/api/setup/test-neko")
-async def api_setup_test_neko(body: dict, _: str = Depends(require_login)) -> JSONResponse:
-    try:
-        result = await neko_control.test_connection(body.get("url", ""), body.get("admin_password", ""))
-    except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=400, detail=f"Couldn't connect: {exc}")
-    return JSONResponse(result)
-
-
 @app.get("/api/connections")
 async def api_get_connections(_: str = Depends(require_login)) -> JSONResponse:
     return JSONResponse(connections_store.current_display())
@@ -289,6 +279,16 @@ async def api_mpv_children(rating_key: str, _: str = Depends(require_login_or_re
     to a specific episode.
     """
     return JSONResponse(await plex.get_show_children(rating_key))
+
+
+@app.get("/api/mpv/sections")
+async def api_mpv_sections(_: str = Depends(require_login_or_remote_key)) -> JSONResponse:
+    return JSONResponse(await plex.list_sections())
+
+
+@app.get("/api/mpv/browse/{section_key}")
+async def api_mpv_browse(section_key: str, offset: int = 0, _: str = Depends(require_login_or_remote_key)) -> JSONResponse:
+    return JSONResponse(await plex.browse_section(section_key, offset=offset))
 
 
 @app.post("/api/mpv/play-item")

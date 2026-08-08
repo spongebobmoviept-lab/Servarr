@@ -21,26 +21,30 @@ def _client() -> httpx.AsyncClient:
 
 def viewer_link() -> str:
     """Public watch-along link for the WATCH LIVE button everyone gets —
-    auto-logs in as a plain viewer (?pwd=...&usr=...), confirmed live to
-    be Neko's own real support for this. Deliberately the non-admin
-    password, so the native admin-only Playback tab (see
-    neko-mpv/neko-client-patch/side.vue) never renders for people who
-    just get this link.
+    auto-fills the password (?pwd=...) so nobody needs to know/type it,
+    confirmed live to be Neko's own real support for this. Deliberately
+    leaves the display name blank rather than forcing everyone to show up
+    as "Guest" — Neko's own login screen still prompts for one, so each
+    person picks their own. Deliberately the non-admin password, so the
+    native admin-only Playback tab (see neko-mpv/neko-client-patch/side.vue)
+    never renders for people who just get this link.
     """
     if not settings.neko_mpv_public_url or not settings.neko_mpv_password:
         return settings.neko_mpv_public_url
-    return f"{settings.neko_mpv_public_url}/?pwd={settings.neko_mpv_password}&usr=Guest"
+    return f"{settings.neko_mpv_public_url}/?pwd={settings.neko_mpv_password}"
 
 
 def admin_link() -> str:
-    """Private control link for whoever started the movie — auto-logs in
-    as Neko admin, which is what actually makes the native Playback tab
-    appear (gated by real Neko admin status, not a URL param). Replaces
-    the old system's admin_viewer_link/CDP approach entirely.
+    """Private control link for whoever started the movie (or any DJ/mod —
+    see movie_night._dm_admin_links) — auto-fills the admin password, which
+    is what actually makes the native Playback tab appear (gated by real
+    Neko admin status, not a URL param). Same as viewer_link(), leaves the
+    display name for the person to pick themselves. Replaces the old
+    system's admin_viewer_link/CDP approach entirely.
     """
     if not settings.neko_mpv_public_url or not settings.neko_mpv_admin_password:
         return settings.neko_mpv_public_url
-    return f"{settings.neko_mpv_public_url}/?pwd={settings.neko_mpv_admin_password}&usr=Admin"
+    return f"{settings.neko_mpv_public_url}/?pwd={settings.neko_mpv_admin_password}"
 
 
 def _next_command_id() -> int:
@@ -105,11 +109,10 @@ async def _play_media(rating_key: str, machine_id: str, offset_ms: int = 0) -> b
 
 
 async def play(title: str, year: Optional[int] = None) -> bool:
-    """Resolves the title against our own Plex library (same server-scoped
-    resolver neko_control.py uses — never Discover) and hands it straight to
-    plex-mpv-shim's Companion API. No mouse, no debug port, no restart —
-    unlike the Plex-Desktop/CDP path, this is a real Companion client that
-    was built to be driven exactly this way.
+    """Resolves the title against our own Plex library (server-scoped —
+    never an ambiguous cross-source Discover result) and hands it straight
+    to plex-mpv-shim's Companion API. No mouse, no debug port, no restart —
+    this is a real Companion client, built to be driven exactly this way.
     """
     item = await plex.resolve_library_item(title, year)
     if not item:
