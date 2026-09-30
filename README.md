@@ -195,3 +195,7 @@ docker run --rm -v "$PWD/tests:/app/tests:ro" -w /app servarr python -m unittest
 - One Python process, one container, no database, nothing to build.
 - Every feature degrades gracefully when its optional dependency isn't configured — nothing crashes because Plex or the player isn't set up.
 - Movie Night never gets stuck mid-flow: a failed automation step just falls back to a plain link, the announcement always goes out.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
