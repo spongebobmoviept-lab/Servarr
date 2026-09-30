@@ -28,7 +28,7 @@ curl -fsSL -o .env.example https://raw.githubusercontent.com/spongebobmoviept-la
 docker compose up -d
 ```
 
-The container runs as uid/gid 1000 by default, so `data/` must be writable by that user. If yours differ, put `PUID=` and `PGID=` (from `id -u` / `id -g`) in a `.env` file. Otherwise you don't need a `.env`: everything is set in the web setup page.
+The app runs as uid/gid 1000 (never root) and makes `data/` writable for itself on start. To use another user, put `PUID=` and `PGID=` (from `id -u` / `id -g`) in a `.env` file. Otherwise you don't need a `.env`: everything is set in the web setup page.
 
 **Want Movie Night to actually play movies?** Use the [Movie Night player](https://github.com/spongebobmoviept-lab/movienight-player) bundle compose instead: it runs the player and Servarr together and pairs them automatically.
 
@@ -120,13 +120,13 @@ All optional and mostly also editable in the setup page; see `.env.example`.
 
 | Variable | Default | What it does |
 |---|---|---|
-| `PUID`, `PGID` | `1000` | User the container runs as; must own `data/`. |
+| `PUID`, `PGID` | `1000` | User the app runs as; `data/` is handed to it on start. |
 | `MOVIE_NIGHT_CONTROL_CHANNEL` | `movie-night-control` | Private DJ/mod channel for the control panel and admin link (also picked in the setup page). |
 | `LEADERBOARD_CHANNEL` | `leaderboard` | Channel for the self-updating top-10 board (setup page). |
 | `EXTRA_READ_ONLY_CHANNELS` | empty | More channels to make read-only (comma-separated) when you run `/setup-server` (setup page). |
 | `PINNED_TILE_CHANNEL`, `PINNED_TILE_TITLE_MATCH` | empty (off) | (Setup page, advanced.) Keep another bot's self-editing webhook tile (say, a status board) at the bottom of a channel dedicated to it: when anything else posts after the tile, Servarr deletes the stale tile so its owner re-posts it, and removes stray posts while no tile exists. Only use it if that bot re-posts when its message is deleted. Needs Manage Messages. |
 | `PLAYER_URL`, `PLAYER_KEY` | empty | Fallback for the player pairing normally done in the setup page. |
-| `PLAYER_PAIR_FILE` | `/pair/pair.json` | Pairing file a bundled player exports; read on start if no player is paired. |
+| `PLAYER_PAIR_FILE` (or `MOVIENIGHT_PAIRING_FILE`) | `/pairing/pair.json`, then `/pair/pair.json` | Pairing file a bundled player exports; read on start (and when the key is rotated). |
 | `PLAYER_VIEWER_URL`, `PLAYER_VIEWER_PASSWORD`, `PLAYER_ADMIN_PASSWORD` | empty | Plain Companion players only: the watch page. (The older `NEKO_MPV_*` names still work.) |
 | `SERVARR_PUBLIC_URL` | `http://localhost:8888` | Base URL for the `/mpv-remote` links (also set in the setup page). |
 | `MPV_REMOTE_KEY` | generated | Secret for the web remote; generated and saved on first start if unset. |
@@ -159,7 +159,7 @@ Yes — revisit `/setup` any time, log in, and jump to any section. Nothing abou
 
 ## Troubleshooting
 
-- **The container won't start / crashes immediately.** Check `docker compose logs -f servarr`. A `PermissionError` on `/data` means `data/` isn't writable by uid 1000 (or your `PUID`). An error about `env_file` means Compose is older than v2.24; update it or create an empty `.env`.
+- **The container won't start / crashes immediately.** Check `docker compose logs -f servarr`. A `PermissionError` on `/data` usually means compose sets `user:` and `data/` belongs to someone else; remove `user:` (the image fixes ownership itself) or `chown` the folder. An error about `env_file` means Compose is older than v2.24; update it or create an empty `.env`.
 - **"The player rejected Servarr's pairing key".** The player's key was rotated. Copy its pair code again and paste it in the setup page.
 - **The DJ control panel never appears.** The control channel must exist and be hidden from @everyone and the Member role; the log says so if it isn't.
 - **The wizard's "Test & Continue" fails.** Double check the URL includes `http://` and the correct port, and that it's reachable *from inside the container* — `localhost` almost never works here, use the machine's real LAN IP.
@@ -187,7 +187,8 @@ docker run --rm -v "$PWD/tests:/app/tests:ro" -w /app servarr python -m unittest
 - The admin player link is only sent in ephemeral replies, DMs, or a control channel Servarr has verified is private.
 - The player pairing key travels only in an `Authorization` header, server to server. A plain Companion player receives your Plex token to stream; keep it on your LAN.
 - The "Test" buttons in the wizard make requests to whatever URL you type; they require the admin login.
-- The container runs as a non-root user.
+- The app runs as a non-root user (`PUID`, default 1000). The entrypoint starts as root only to hand `data/` to that user, then drops privileges; set `user:` in compose to skip even that.
+- `DISCORD_TOKEN` is accepted as an alias for `DISCORD_BOT_TOKEN`.
 
 ## Design principles
 

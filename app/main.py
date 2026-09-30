@@ -49,7 +49,7 @@ async def lifespan(_: FastAPI):
     if connections_store.ensure_remote_key():
         await log("servarr: generated a random web-remote key (MPV_REMOTE_KEY) — no action needed")
     if connections_store.auto_pair_from_file():
-        await log(f"servarr: paired with the Movie Night player at {settings.neko_mpv_shim_url} (from {settings.player_pair_file})")
+        await log(f"servarr: paired with the Movie Night player at {settings.neko_mpv_shim_url} (from its pairing file)")
     await mpv_control.refresh_links(force=True)
     await xp_store.store.load()
 

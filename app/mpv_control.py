@@ -106,6 +106,18 @@ def load_pair_file(path: str) -> Optional[dict]:
     return {"url": str(data["url"]).rstrip("/"), "key": str(data["api_key"]), "public_url": (data.get("public_url") or "").rstrip("/")}
 
 
+_DEFAULT_PAIR_FILES = ("/pairing/pair.json", "/pair/pair.json")
+
+
+def find_pair_file() -> Optional[dict]:
+    paths = (settings.player_pair_file,) if settings.player_pair_file else _DEFAULT_PAIR_FILES
+    for path in paths:
+        data = load_pair_file(path)
+        if data:
+            return data
+    return None
+
+
 # ---------------------------------------------------------------------------
 # movienight player (v1 API)
 # ---------------------------------------------------------------------------
@@ -114,6 +126,14 @@ def load_pair_file(path: str) -> Optional[dict]:
 async def _mn(method: str, path: str, payload: Optional[dict] = None, params: Optional[dict] = None) -> tuple[int, dict]:
     async with _client() as client:
         resp = await client.request(method, MN_PREFIX + path, json=payload, params=params)
+    if resp.status_code in (401, 403):
+        # The player may have rotated its key; a bundled player re-exports
+        # pair.json, so pick that up once and retry.
+        from . import connections_store
+
+        if connections_store.auto_pair_from_file():
+            async with _client() as client:
+                resp = await client.request(method, MN_PREFIX + path, json=payload, params=params)
     try:
         data = resp.json()
     except ValueError:

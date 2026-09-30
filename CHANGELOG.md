@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.1 — 2026-09-30
+
+### Fixed
+- A fresh `./data` folder created by Docker (owned by root) no longer stops the app: the image's entrypoint hands `/data` to `PUID:PGID` (default 1000) and then drops root before starting the app. Compose passes `PUID`/`PGID` instead of `user:`.
+- Reads the Movie Night player bundle's pairing file at `/pairing/pair.json` (`MOVIENIGHT_PAIRING_FILE`), and re-reads it when the player rotates its key.
+- `DISCORD_TOKEN` works as an alias for `DISCORD_BOT_TOKEN`.
+
 ## 1.1.0 — 2026-09-30
 
 ### Added

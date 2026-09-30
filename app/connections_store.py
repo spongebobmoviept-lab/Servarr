@@ -107,15 +107,19 @@ def ensure_remote_key() -> bool:
 
 
 def auto_pair_from_file() -> bool:
-    """Zero-click pairing for the bundle: if no player is configured yet and
-    a movienight player has exported pair.json into the shared volume, use
-    it. Returns True if a player was paired."""
+    """Zero-click pairing for the bundle: a movienight player can export
+    pair.json into a volume shared with Servarr. Used when no player is
+    paired yet, and to pick up a rotated key for the same player. Returns
+    True if the saved pairing changed."""
     from . import mpv_control
 
-    if settings.neko_mpv_shim_url or not settings.player_pair_file:
-        return False
-    data = mpv_control.load_pair_file(settings.player_pair_file)
+    data = mpv_control.find_pair_file()
     if not data:
+        return False
+    same_player = settings.neko_mpv_shim_url.rstrip("/") == data["url"]
+    if settings.neko_mpv_shim_url and not same_player:
+        return False  # paired with a different player by hand; leave it
+    if same_player and settings.player_key == data["key"] and settings.player_mode == "movienight":
         return False
     settings.neko_mpv_shim_url = data["url"]
     settings.player_key = data["key"]

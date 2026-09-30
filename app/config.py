@@ -1,6 +1,6 @@
 import os
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 
 
 def _env_int(name: str, default: int) -> int:
@@ -61,7 +61,9 @@ class Settings:
         self.neko_mpv_shim_url = (os.environ.get("PLAYER_URL") or os.environ.get("NEKO_MPV_SHIM_URL", "")).rstrip("/")
         self.player_key = os.environ.get("PLAYER_KEY", "")
         self.player_mode = os.environ.get("PLAYER_MODE", "").strip().lower()
-        self.player_pair_file = os.environ.get("PLAYER_PAIR_FILE", "/pair/pair.json").strip()
+        # Also accepts MOVIENIGHT_PAIRING_FILE (the player bundle's name).
+        # Empty = look in /pairing/pair.json and /pair/pair.json.
+        self.player_pair_file = (os.environ.get("PLAYER_PAIR_FILE") or os.environ.get("MOVIENIGHT_PAIRING_FILE", "")).strip()
         self.neko_mpv_viewer_url = os.environ.get("NEKO_MPV_VIEWER_URL", "").rstrip("/")
         self.neko_mpv_public_url = (
             os.environ.get("PLAYER_VIEWER_URL") or os.environ.get("NEKO_MPV_PUBLIC_URL", "")
@@ -112,7 +114,7 @@ class Settings:
         self.plex_url = os.environ.get("PLEX_URL", "").rstrip("/")
         self.plex_token = os.environ.get("PLEX_TOKEN", "")
 
-        self.discord_bot_token = os.environ.get("DISCORD_BOT_TOKEN", "").strip()
+        self.discord_bot_token = (os.environ.get("DISCORD_BOT_TOKEN") or os.environ.get("DISCORD_TOKEN", "")).strip()
         # Same reasoning as Requestarr — instant per-guild command sync
         # instead of waiting up to an hour for a global sync to propagate.
         self.discord_guild_id = os.environ.get("DISCORD_GUILD_ID", "").strip()

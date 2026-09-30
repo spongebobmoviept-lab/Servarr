@@ -71,6 +71,26 @@ class PairCodeTests(unittest.TestCase):
         self.assertEqual(mpv_control.load_pair_file(path)["key"], KEY)
 
 
+class PairFileSyncTests(unittest.TestCase):
+    def test_bundle_pairing_and_key_rotation(self):
+        from app import connections_store
+
+        path = os.path.join(tempfile.mkdtemp(), "pair.json")
+        with mock.patch.object(settings, "player_pair_file", path), mock.patch.object(settings, "neko_mpv_shim_url", ""),                 mock.patch.object(settings, "player_key", ""), mock.patch.object(settings, "player_mode", ""):
+            self.assertFalse(connections_store.auto_pair_from_file())
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"v": 1, "url": "http://192.168.1.50:8080/", "api_key": "k1"}, fh)
+            self.assertTrue(connections_store.auto_pair_from_file())
+            self.assertEqual((settings.neko_mpv_shim_url, settings.player_key, settings.player_mode), ("http://192.168.1.50:8080", "k1", "movienight"))
+            self.assertFalse(connections_store.auto_pair_from_file())
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"v": 1, "url": "http://192.168.1.50:8080", "api_key": "k2"}, fh)
+            self.assertTrue(connections_store.auto_pair_from_file())
+            self.assertEqual(settings.player_key, "k2")
+            settings.neko_mpv_shim_url = "http://other-player:3000"
+            self.assertFalse(connections_store.auto_pair_from_file())
+
+
 class MovienightClientTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.patches = [
