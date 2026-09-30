@@ -1,8 +1,14 @@
 import os
 
+APP_VERSION = "1.1.0"
+
 
 def _env_int(name: str, default: int) -> int:
     return int(os.environ.get(name, default))
+
+
+def _env_list(name: str, default: str = "") -> list[str]:
+    return [part.strip() for part in os.environ.get(name, default).split(",") if part.strip()]
 
 
 class Settings:
@@ -21,8 +27,8 @@ class Settings:
 
         # Movie Night — a daily vote among already-downloaded movies, winner
         # announced at movie_night_hour_utc. Reuses Reclaimarr's own admin
-        # login to call its pause-upgrade endpoint (see reclaimarr/app/main.py)
-        # so nobody's shared viewing gets interrupted by a 4K swap mid-movie.
+        # login to call its pause-upgrade endpoint (optional) so nobody's
+        # shared viewing gets interrupted by a 4K swap mid-movie.
         self.reclaimarr_url = os.environ.get("RECLAIMARR_URL", "")
         self.reclaimarr_auth_user = os.environ.get("RECLAIMARR_AUTH_USER", "")
         self.reclaimarr_auth_pass = os.environ.get("RECLAIMARR_AUTH_PASS", "")
@@ -38,37 +44,70 @@ class Settings:
         # means only Manage Server can use it.
         self.movie_night_dj_role_id = os.environ.get("MOVIE_NIGHT_DJ_ROLE_ID", "").strip()
 
-        # Movie Night's player — neko-mpv/plex-mpv-shim (see neko-mpv/ and
-        # app/mpv_control.py). A real Plex Companion client — no mouse-click
-        # UI to fall back on once started (NEKO_DESKTOP_INPUT_ENABLED=false
-        # there), so pause/resume/seek/stop go through its Companion HTTP
-        # API instead (app/mpv_control.py). Replaced an earlier Plex-Desktop/
-        # Chrome-DevTools-Protocol approach (browser puppeteering, disabled
-        # its own hardware video overlay whenever its debug port was active)
-        # that's now fully retired — that container's been removed.
-        self.neko_mpv_shim_url = os.environ.get("NEKO_MPV_SHIM_URL", "").rstrip("/")
+        # Movie Night's player (optional) — any player that speaks the Plex
+        # Companion HTTP API (e.g. plex-mpv-shim) and is shown to viewers
+        # through a web page such as a Neko virtual browser. See the README's
+        # "Movie Night player" section for the exact HTTP contract.
+        # Normally paired in the setup wizard (paste the player's pair code);
+        # these env vars are the fallback.
+        #   PLAYER_URL         — the player's address (keep it on your LAN)
+        #   PLAYER_KEY         — pairing key, sent as "Authorization: Bearer"
+        #   PLAYER_MODE        — "movienight" or "companion"; set by pairing
+        #   PLAYER_PAIR_FILE   — pair.json a bundled player exports; read on
+        #                        start when no player is set (zero-click)
+        #   PLAYER_VIEWER_URL  — companion mode only: the page people open
+        # The older NEKO_MPV_SHIM_URL / NEKO_MPV_PUBLIC_URL / NEKO_MPV_VIEWER_URL
+        # names still work.
+        self.neko_mpv_shim_url = (os.environ.get("PLAYER_URL") or os.environ.get("NEKO_MPV_SHIM_URL", "")).rstrip("/")
+        self.player_key = os.environ.get("PLAYER_KEY", "")
+        self.player_mode = os.environ.get("PLAYER_MODE", "").strip().lower()
+        self.player_pair_file = os.environ.get("PLAYER_PAIR_FILE", "/pair/pair.json").strip()
         self.neko_mpv_viewer_url = os.environ.get("NEKO_MPV_VIEWER_URL", "").rstrip("/")
-        self.neko_mpv_public_url = os.environ.get("NEKO_MPV_PUBLIC_URL", "").rstrip("/") or self.neko_mpv_viewer_url
-        # For building auto-login links (?pwd=...&usr=...) — a viewer-level
-        # link for the public WATCH LIVE button (never shows the admin-only
-        # native Playback tab), and an admin-level link for whoever started
-        # it (does show that tab). See mpv_control.viewer_link/admin_link.
-        self.neko_mpv_password = os.environ.get("NEKO_MPV_PASSWORD", "")
-        self.neko_mpv_admin_password = os.environ.get("NEKO_MPV_ADMIN_PASSWORD", "")
-        # Where Discord's /mpv-play reply links to for the /mpv-remote control
-        # page — a plain LAN default since that page is only ever opened from
-        # inside the house so far (see NEKO_PUBLIC_URL above for the pattern
-        # this would follow if it's ever port-forwarded for outside friends).
+        self.neko_mpv_public_url = (
+            os.environ.get("PLAYER_VIEWER_URL") or os.environ.get("NEKO_MPV_PUBLIC_URL", "")
+        ).rstrip("/") or self.neko_mpv_viewer_url
+        # Optional auto-login links (?pwd=...): a viewer-level password for
+        # the public WATCH LIVE button, and an admin-level one that only
+        # DJs/mods ever receive (ephemeral replies or the private control
+        # channel). Leave blank to link to the bare viewer page.
+        self.neko_mpv_password = os.environ.get("PLAYER_VIEWER_PASSWORD") or os.environ.get("NEKO_MPV_PASSWORD", "")
+        self.neko_mpv_admin_password = os.environ.get("PLAYER_ADMIN_PASSWORD") or os.environ.get("NEKO_MPV_ADMIN_PASSWORD", "")
+        # Base URL used to build the /mpv-remote control-page link Servarr
+        # sends to DJs. Set it to however your DJs reach Servarr.
         self.servarr_public_url = os.environ.get("SERVARR_PUBLIC_URL", "http://localhost:8888").rstrip("/")
-        # Dedicated secret for the /mpv-remote link (see auth.py's
-        # require_login_or_remote_key) — deliberately its OWN random
-        # alphanumeric token, not a reuse of neko_admin_password. Confirmed
-        # live that reusing a real password (which ended in "!") broke the
-        # link: several link-auto-detectors (chat clients, browsers) strip
-        # trailing punctuation off an auto-linkified URL since they can't
-        # tell if it's part of the link or the end of a sentence, silently
-        # truncating the key. Plain alphanumeric can't hit that class of bug.
+        # Shared secret for the /mpv-remote page (see auth.py). Use a long
+        # random alphanumeric string (link auto-detectors can strip trailing
+        # punctuation). The link carries it in the URL *fragment* (#key=...),
+        # which browsers never send to the server; the page then sends it
+        # in an X-Remote-Key header. Generated automatically on first start
+        # if you don't set one.
         self.mpv_remote_key = os.environ.get("MPV_REMOTE_KEY", "")
+        # Extra browser origins allowed to call Servarr cross-origin — e.g.
+        # the viewer page's origin if it embeds /mpv-remote in an iframe.
+        # The viewer/public player URLs above are allowed automatically.
+        self.cors_allowed_origins = _env_list("CORS_ALLOWED_ORIGINS")
+
+        # Channel names (without the #). Defaults suit a fresh server; change
+        # them to match an existing one.
+        # Private channel for DJs/mods: the always-on Movie Night control
+        # panel and the admin player link are posted here, so make it
+        # visible to DJs/mods only.
+        self.movie_night_control_channel = os.environ.get("MOVIE_NIGHT_CONTROL_CHANNEL", "movie-night-control").strip()
+        self.leaderboard_channel = os.environ.get("LEADERBOARD_CHANNEL", "leaderboard").strip()
+        # Any other channels that should be read-only (bot/webhook posts
+        # only), in addition to the built-in list in gating.py.
+        self.extra_read_only_channels = _env_list("EXTRA_READ_ONLY_CHANNELS")
+        # Optional: keep another bot's single self-editing webhook "tile"
+        # (e.g. a status board) at the bottom of its channel. When anything
+        # else posts after the tile, Servarr deletes the stale tile so its
+        # owner re-posts a fresh one at the bottom, and stray posts in that
+        # channel are removed while no tile exists. Only enable this for a
+        # channel dedicated to that tile, and only if the tile's owner
+        # re-posts when its message is deleted. Needs Manage Messages.
+        #   PINNED_TILE_CHANNEL      — channel name; blank = off (default)
+        #   PINNED_TILE_TITLE_MATCH  — text the tile's embed title contains
+        self.pinned_tile_channel = os.environ.get("PINNED_TILE_CHANNEL", "").strip()
+        self.pinned_tile_title_match = os.environ.get("PINNED_TILE_TITLE_MATCH", "").strip()
 
         self.plex_url = os.environ.get("PLEX_URL", "").rstrip("/")
         self.plex_token = os.environ.get("PLEX_TOKEN", "")

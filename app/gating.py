@@ -8,6 +8,7 @@ to everyone regardless of Member status.
 
 import discord
 
+from .config import settings
 from .logger import log
 
 MEMBER_ROLE_NAME = "Member"
@@ -16,17 +17,29 @@ GATE_CUSTOM_ID = "servarr:agree_rules"
 # Visible to everyone, but only the bot (and webhooks, for the release
 # feeds) can post here — never hidden, since these are exactly what people
 # need to see without doing anything first: releases, requests, live status.
-READ_ONLY_CHANNEL_NAMES = [
+BUILTIN_READ_ONLY_CHANNEL_NAMES = [
     "start-here", "rules", "faq", "how-to-request", "playback-help",
-    "requests", "movie-releases", "tv-releases", "anime-releases",
-    "now-playing", "leaderboard", "level-ups", "mod-log",
+    "movie-releases", "tv-releases", "anime-releases",
+    "now-playing", "level-ups", "mod-log",
 ]
+
+
+def read_only_channel_names() -> list[str]:
+    """Built-in list plus the configurable channels: the leaderboard and
+    Movie Night control channels (see config.py) and anything listed in
+    EXTRA_READ_ONLY_CHANNELS. #general and #requests stay open for chat."""
+    names = list(BUILTIN_READ_ONLY_CHANNEL_NAMES)
+    for name in [settings.leaderboard_channel, settings.movie_night_control_channel, *settings.extra_read_only_channels]:
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
 # Other bots that also need to post in these read-only channels — Requestarr
 # posts request confirmations to #requests, but has no channel-level
-# overwrite of its own unless explicitly granted here. Confirmed live: this
-# was missing and silently broke every request after the channels were
-# locked down (Requestarr could add to Sonarr/Radarr, then hit Forbidden
-# trying to post the confirmation, leaving the job untracked).
+# overwrite of its own unless explicitly granted here. Without it, a
+# request bot could add to Sonarr/Radarr, then hit Forbidden trying to post
+# the confirmation once the channels are locked down.
 OTHER_BOT_ROLE_NAMES = ["Requestarr"]
 # The one channel actually gated behind agreeing to the rules.
 GATED_CHAT_CHANNEL_NAME = "general"
@@ -117,7 +130,7 @@ async def lock_down_server(guild: discord.Guild) -> discord.Role:
     # updates and auto-posted feeds keep working.
     bot_role = guild.me.top_role
     other_bot_roles = [r for r in (discord.utils.get(guild.roles, name=n) for n in OTHER_BOT_ROLE_NAMES) if r is not None]
-    for name in READ_ONLY_CHANNEL_NAMES:
+    for name in read_only_channel_names():
         channel = discord.utils.get(guild.text_channels, name=name)
         if channel is None:
             continue

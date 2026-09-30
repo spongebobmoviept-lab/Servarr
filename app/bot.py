@@ -2,6 +2,7 @@ import datetime
 
 import discord
 from discord import app_commands
+from discord.ext import tasks
 
 from . import gating, leveling, moderation, movie_night, mpv_control, release_digest, theming, xp_store
 from .calendar_embeds import build_upcoming_embed
@@ -18,6 +19,7 @@ intents.members = True  # needed to resolve display names for the leaderboard
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
 client.add_view(gating.RulesGateView())  # persistent — keeps working on old messages across restarts
+client.add_view(movie_night.CommanderPanelView())  # persistent — the Movie Night control-channel panel
 
 # In-memory, resets on restart — deliberately not persisted. This is just to
 # avoid DM-spamming someone who fires off several stray messages in a row;
@@ -36,6 +38,44 @@ async def _mod_log(guild: discord.Guild, text: str) -> None:
             await channel.send(text)
         except Exception as exc:  # noqa: BLE001
             await log(f"bot: couldn't post to mod-log: {exc}")
+
+
+_LEADERBOARD_MARKER = "live-leaderboard-v1"
+
+
+async def refresh_leaderboard_board(guild: discord.Guild) -> None:
+    """Self-updating top-10 board in the leaderboard channel, so the channel shows
+    current standings at a glance instead of sitting empty between people
+    manually running /leaderboard. Idempotent by footer marker, same
+    pattern as movie_night's commander panel — edits the existing post
+    in place rather than spamming a new one each tick/restart.
+    """
+    channel = discord.utils.get(guild.text_channels, name=settings.leaderboard_channel)
+    if channel is None:
+        return
+    entries = await xp_store.store.get_leaderboard(10)
+
+    def resolve_name(user_id: int) -> str:
+        member = guild.get_member(user_id)
+        return member.display_name if member else f"User {user_id}"
+
+    embed = leveling.leaderboard_embed(entries, resolve_name)
+    embed.set_footer(text=_LEADERBOARD_MARKER)
+    embed.timestamp = discord.utils.utcnow()
+    try:
+        async for old in channel.history(limit=20):
+            if old.author == client.user and old.embeds and old.embeds[0].footer and old.embeds[0].footer.text == _LEADERBOARD_MARKER:
+                await old.edit(embed=embed)
+                return
+        await channel.send(embed=embed)
+    except Exception as exc:  # noqa: BLE001
+        await log(f"bot: couldn't refresh #{settings.leaderboard_channel} board: {exc}")
+
+
+@tasks.loop(minutes=10)
+async def _leaderboard_tick() -> None:
+    for guild in client.guilds:
+        await refresh_leaderboard_board(guild)
 
 
 async def _relocate_stray_message(message: discord.Message) -> None:
@@ -62,6 +102,12 @@ async def _relocate_stray_message(message: discord.Message) -> None:
 
 @client.event
 async def on_message(message: discord.Message) -> None:
+    # Checked before the bot-author return below — the thing this needs to
+    # react to (other bots' webhook posts landing in the release channels)
+    # IS a bot/webhook author. Without this, the calendar digest board
+    # would scroll out of view under their activity within minutes.
+    release_digest.on_channel_message(message)
+
     if message.author.bot or message.guild is None:
         return
 
@@ -70,11 +116,17 @@ async def on_message(message: discord.Message) -> None:
     # should rarely fire. But permission overwrites can be missed (a
     # channel created before setup ran, a role misconfigured, etc.), and
     # silently leaving a stray message there is worse than a redundant check.
-    if isinstance(message.channel, discord.TextChannel) and message.channel.name in gating.READ_ONLY_CHANNEL_NAMES:
+    if isinstance(message.channel, discord.TextChannel) and message.channel.name in gating.read_only_channel_names():
         source_channel = message.channel.name
         author = message.author
         await _relocate_stray_message(message)
-        await _mod_log(message.guild, f"↪️ Moved a message from **{author}** in #{source_channel} to #general (that channel's read-only).")
+        quoted = (message.content or "*(no text)*")[:500]
+        if message.attachments:
+            quoted += "\n" + "\n".join(a.url for a in message.attachments)
+        await _mod_log(
+            message.guild,
+            f"↪️ Moved a message from **{author}** in #{source_channel} to #general (that channel's read-only).\n> {quoted}",
+        )
 
         if author.id not in _already_warned:
             _already_warned.add(author.id)
@@ -90,7 +142,6 @@ async def on_message(message: discord.Message) -> None:
                 )
             except Exception:  # noqa: BLE001 — DMs closed is common and not worth logging as an error
                 pass
-        return
         return
 
     result = await xp_store.store.try_add_xp(message.author.id)
@@ -232,10 +283,10 @@ def _is_movie_night_dj(interaction: discord.Interaction) -> bool:
     without handing them full mod permissions.
 
     Accepts either the role's numeric ID or its plain name (case-insensitive)
-    — confirmed live that people naturally type the name (e.g. "Commander"),
-    and a numeric-only parse crashed the whole command for everyone with the
-    role instead of just falling back to a name match.
+    — people naturally type the name (e.g. "Movie Night DJ").
     """
+    if interaction.guild is None or not isinstance(interaction.user, discord.Member):
+        return False
     if interaction.user.guild_permissions.manage_guild:
         return True
     configured = settings.movie_night_dj_role_id.strip()
@@ -281,22 +332,16 @@ async def mpv_play_command(interaction: discord.Interaction, title: str) -> None
     view = discord.ui.View()
     if settings.neko_mpv_public_url:
         # This reply is ephemeral — only the DJ who ran the command sees
-        # it — so they get the admin-level auto-login link (?pwd=admin
-        # password&usr=Admin), which is what makes the native admin-only
-        # Playback tab actually appear inside the Neko window (see
-        # neko-mpv/neko-client-patch/side.vue — gated by real Neko admin
-        # status now, not a URL param like the old injected-overlay
-        # approach used).
+        # it — so they get the admin-level auto-login link.
         watch_url = mpv_control.admin_link()
         view.add_item(discord.ui.Button(label="▶️  WATCH LIVE", style=discord.ButtonStyle.link, url=watch_url))
     if settings.mpv_remote_key:
         # This reply is ephemeral (only the person who ran the command sees
-        # it), so it's fine to embed the shared secret directly in the link —
-        # same reasoning as the old system's admin_viewer_link. Clicking it
-        # skips the login prompt entirely (see mpv_remote_page in main.py).
-        # Uses its own dedicated plain-alphanumeric token (not a real
-        # password) specifically so auto-linkifiers never truncate it.
-        remote_url = f"{settings.servarr_public_url}/mpv-remote?key={settings.mpv_remote_key}"
+        # it). The key rides in the URL fragment (#key=...), which browsers
+        # never send to the server, so it can't land in access logs or
+        # proxies; the page moves it into a header and strips it from the
+        # address bar (see static/mpv-remote.html and auth.py).
+        remote_url = f"{settings.servarr_public_url}/mpv-remote#key={settings.mpv_remote_key}"
         view.add_item(discord.ui.Button(label="🎮  REMOTE CONTROLS", style=discord.ButtonStyle.link, url=remote_url))
     await interaction.followup.send(
         f"Starting **{title}**… use `/mpv-pause`, `/mpv-seek`, `/mpv-stop`, or the remote link above to control it.",
@@ -393,6 +438,11 @@ async def help_command(interaction: discord.Interaction) -> None:
 async def on_tree_error(interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
     if isinstance(error, (app_commands.MissingPermissions, app_commands.CheckFailure)):
         await interaction.response.send_message("You don't have permission to do that.", ephemeral=True)
+        # The user only ever sees the line above (ephemeral) — mods
+        # otherwise have zero visibility into who's trying to run
+        # gated commands (mpv-play, kick, etc.) without permission.
+        if interaction.guild is not None and interaction.command is not None:
+            await _mod_log(interaction.guild, f"🚫 {interaction.user.mention} tried `/{interaction.command.name}` — blocked (no permission)")
         return
     await log(f"bot: command error: {error}")
     if interaction.response.is_done():
@@ -414,6 +464,17 @@ async def on_ready() -> None:
     else:
         await tree.sync()
         await log("servarr: synced commands globally (can take up to an hour to propagate on first use)")
+    for guild in client.guilds:
+        try:
+            await movie_night.refresh_commander_panel(guild)
+        except Exception as exc:  # noqa: BLE001
+            await log(f"servarr: couldn't refresh commander panel for {guild}: {exc}")
+        try:
+            await release_digest.seed_pinned_tile(guild)
+        except Exception as exc:  # noqa: BLE001
+            await log(f"servarr: couldn't seed the pinned tile: {exc}")
+    if not _leaderboard_tick.is_running():
+        _leaderboard_tick.start()
 
 
 async def start() -> None:
@@ -429,3 +490,4 @@ async def start() -> None:
             "enable BOTH 'Server Members Intent' (for /leaderboard names) and 'Message Content Intent' "
             "(for relocating stray messages out of read-only channels), then restart."
         )
+

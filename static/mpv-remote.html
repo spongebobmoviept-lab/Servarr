@@ -171,17 +171,51 @@
 </div>
 
 <script>
-// Carries the ?key= from this page's own URL on every request instead of
-// relying on the cookie require_login_or_remote_key also accepts —
-// confirmed live that the cookie alone breaks entirely on Safari when
-// this page loads inside the native Playback tab's iframe (a third-party
-// context to Neko's own page), since Safari blocks cookies there by
-// default with no user-facing setting to change. Works identically
-// whether or not the cookie is available.
-const REMOTE_KEY = new URLSearchParams(window.location.search).get('key') || '';
-function withKey(url) {
-  if (!REMOTE_KEY) return url;
-  return url + (url.includes('?') ? '&' : '?') + 'key=' + encodeURIComponent(REMOTE_KEY);
+// The remote key arrives in the URL fragment (/mpv-remote#key=...), which
+// browsers never send to the server. It is moved into memory and sent as an
+// X-Remote-Key header on every request — this works even inside an iframe
+// where the browser blocks third-party cookies (Safari does by default).
+// It is also exchanged once for an HttpOnly cookie (POST /api/mpv/login) so
+// a bookmarked /mpv-remote keeps working, then stripped from the address
+// bar. Legacy links that used ?key= are read the same way client-side, but
+// the server no longer accepts the key as a query parameter.
+const REMOTE_KEY = (() => {
+  const fromHash = new URLSearchParams(window.location.hash.slice(1)).get('key');
+  const fromQuery = new URLSearchParams(window.location.search).get('key');
+  let key = fromHash || fromQuery || '';
+  try {
+    if (key) sessionStorage.setItem('mpvRemoteKey', key);
+    else key = sessionStorage.getItem('mpvRemoteKey') || '';
+  } catch (e) { /* storage unavailable — keep the in-memory key */ }
+  if (fromHash || fromQuery) {
+    history.replaceState(null, '', window.location.pathname);
+  }
+  return key;
+})();
+
+function apiFetch(url, opts) {
+  const o = Object.assign({ credentials: 'same-origin' }, opts || {});
+  o.headers = Object.assign({}, o.headers || {});
+  if (REMOTE_KEY) o.headers['X-Remote-Key'] = REMOTE_KEY;
+  return fetch(url, o);
+}
+
+if (REMOTE_KEY) {
+  apiFetch('/api/mpv/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key: REMOTE_KEY }),
+  }).catch(() => {});
+}
+
+// Posters are fetched with the same header and shown as blob URLs, since a
+// plain <img src> can't carry a header (and the cookie may be blocked).
+async function loadPoster(img, url) {
+  try {
+    const resp = await apiFetch(url);
+    if (!resp.ok) return;
+    img.src = URL.createObjectURL(await resp.blob());
+  } catch (e) { /* leave it blank */ }
 }
 
 const statusEl = document.getElementById('status');
@@ -217,7 +251,7 @@ function fmt(ms) {
 
 async function refresh() {
   try {
-    const resp = await fetch(withKey('/api/mpv/status'));
+    const resp = await apiFetch(('/api/mpv/status'));
     if (!resp.ok) throw new Error(resp.status);
     const data = await resp.json();
     lastState = data.state;
@@ -235,7 +269,7 @@ async function refresh() {
 async function action(path, opts) {
   msgEl.textContent = '';
   try {
-    const resp = await fetch(withKey(path), Object.assign({ method: 'POST' }, opts || {}));
+    const resp = await apiFetch((path), Object.assign({ method: 'POST' }, opts || {}));
     if (!resp.ok) {
       const detail = await resp.json().catch(() => ({}));
       msgEl.textContent = detail.detail || `Failed (${resp.status})`;
@@ -265,7 +299,7 @@ document.getElementById('stop').onclick = () => action('/api/mpv/stop');
 function posterOrBlank(item) {
   if (item.poster_url) {
     const img = document.createElement('img');
-    img.src = withKey(item.poster_url);
+    loadPoster(img, item.poster_url);
     img.alt = '';
     return img;
   }
@@ -368,7 +402,7 @@ function appendResults(items) {
 async function loadOnDeck() {
   onDeckResultsEl.innerHTML = '<div id="empty">Loading…</div>';
   try {
-    const resp = await fetch(withKey('/api/mpv/on-deck'));
+    const resp = await apiFetch(('/api/mpv/on-deck'));
     const items = resp.ok ? await resp.json() : [];
     onDeckResultsEl.innerHTML = '';
     if (!items.length) {
@@ -419,7 +453,7 @@ async function handlePick(item) {
 async function loadSeasons(ratingKey, showTitle) {
   renderBreadcrumb();
   resultsEl.innerHTML = '<div id="empty">Loading…</div>';
-  const resp = await fetch(withKey(`/api/mpv/children/${ratingKey}`));
+  const resp = await apiFetch((`/api/mpv/children/${ratingKey}`));
   const items = resp.ok ? await resp.json() : [];
   renderResults(items);
 }
@@ -427,7 +461,7 @@ async function loadSeasons(ratingKey, showTitle) {
 async function loadEpisodes(seasonRatingKey) {
   renderBreadcrumb();
   resultsEl.innerHTML = '<div id="empty">Loading…</div>';
-  const resp = await fetch(withKey(`/api/mpv/children/${seasonRatingKey}`));
+  const resp = await apiFetch((`/api/mpv/children/${seasonRatingKey}`));
   const items = resp.ok ? await resp.json() : [];
   renderResults(items);
 }
@@ -441,7 +475,7 @@ function doSearch() {
   renderPills();
   if (!q) { renderResults([]); return; }
   resultsEl.innerHTML = '<div id="empty">Searching…</div>';
-  fetch(withKey(`/api/mpv/search?q=${encodeURIComponent(q)}`))
+  apiFetch((`/api/mpv/search?q=${encodeURIComponent(q)}`))
     .then(r => r.ok ? r.json() : [])
     .then(renderResults)
     .catch(() => renderResults([]));
@@ -471,7 +505,7 @@ function renderPills() {
 
 async function loadSections() {
   try {
-    const resp = await fetch(withKey('/api/mpv/sections'));
+    const resp = await apiFetch(('/api/mpv/sections'));
     sections = resp.ok ? await resp.json() : [];
     renderPills();
   } catch (e) { /* pills just won't show */ }
@@ -483,14 +517,14 @@ async function selectSection(key, title) {
   renderBreadcrumb();
   renderPills();
   resultsEl.innerHTML = '<div id="empty">Loading…</div>';
-  const resp = await fetch(withKey(`/api/mpv/browse/${key}?offset=0`));
+  const resp = await apiFetch((`/api/mpv/browse/${key}?offset=0`));
   const items = resp.ok ? await resp.json() : [];
   renderResults(items);
 }
 
 document.getElementById('loadMoreBtn').onclick = async () => {
   view.offset += 30;
-  const resp = await fetch(withKey(`/api/mpv/browse/${view.sectionKey}?offset=${view.offset}`));
+  const resp = await apiFetch((`/api/mpv/browse/${view.sectionKey}?offset=${view.offset}`));
   const items = resp.ok ? await resp.json() : [];
   appendResults(items);
 };

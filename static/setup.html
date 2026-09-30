@@ -169,8 +169,13 @@
         <p class="sub">The bot token that lets Servarr actually run in your server.</p>
         <label for="discord-token">Bot token</label>
         <input type="password" id="discord-token" placeholder="Paste your bot token" autocomplete="off" />
-        <label for="discord-guild">Server (guild) ID <span class="optional-badge">optional</span></label>
-        <input type="text" id="discord-guild" placeholder="For instant command sync — leave blank to sync globally (can take up to an hour)" />
+        <label for="discord-guild">Server</label>
+        <div style="display:flex; gap:0.5rem;">
+          <select id="discord-guild" style="flex:1;"><option value="">— paste the token, then click "Find my servers" —</option></select>
+          <button type="button" class="btn btn-ghost" id="btn-load-guilds">Find my servers</button>
+        </div>
+        <div class="field-hint" id="guild-hint">Picking your server makes slash commands appear instantly.</div>
+        <div class="field-hint" id="invite-row" style="display:none;">Bot not in your server yet? <a id="invite-link" href="#" target="_blank" rel="noopener">Invite it</a> (opens Discord), then click "Find my servers" again.</div>
         <details class="help">
           <summary>Where do I get a bot token?</summary>
           <div class="help-body">
@@ -178,8 +183,7 @@
               <li>Go to the <strong>Discord Developer Portal</strong> → <strong>New Application</strong>.</li>
               <li><strong>Bot</strong> tab → <strong>Reset Token</strong> → copy it (you won't see it again).</li>
               <li>Under <strong>Privileged Gateway Intents</strong>, turn on <strong>Message Content Intent</strong> and <strong>Server Members Intent</strong> — Servarr needs both.</li>
-              <li><strong>OAuth2 → URL Generator</strong>: check <code>bot</code> and <code>applications.commands</code>, pick the permissions it needs, then open the generated URL to invite it to your server.</li>
-              <li>Enable Developer Mode in Discord (User Settings → Advanced), then right-click your server icon → <strong>Copy Server ID</strong> for the guild ID above.</li>
+              <li>Paste the token above and click <strong>Find my servers</strong>. If your server isn't listed, use the <strong>Invite it</strong> link that appears.</li>
             </ol>
           </div>
         </details>
@@ -273,7 +277,32 @@
         <input type="password" id="reclaimarr-pass" autocomplete="off" />
         <div class="result" id="result-reclaimarr"></div>
 
-        <p class="field-hint">The actual player (neko-mpv) is configured through its own .env, not here — see its README.</p>
+        <div class="section-title">Movie Night player</div>
+        <p class="field-hint" style="margin-top:-0.5rem;">The player that actually plays the movie for everyone. Skip this and Movie Night still runs the vote and the announcement.</p>
+        <label for="player-url">Pair code (or the player's address)</label>
+        <div style="display:flex; gap:0.5rem;">
+          <input type="text" id="player-url" placeholder="MNP1-… from the player's setup page" autocomplete="off" style="flex:1;" />
+          <button type="button" class="btn btn-ghost" id="btn-pair-player">Pair</button>
+        </div>
+        <div class="field-hint">Using the Movie Night player bundle? It pairs itself — this shows as already paired. Otherwise copy the pair code from the player's setup page.</div>
+        <label for="player-key">Pairing key <span class="optional-badge">only if you typed an address</span></label>
+        <input type="password" id="player-key" autocomplete="off" />
+        <details class="help">
+          <summary>Using a plain Plex Companion player (e.g. plex-mpv-shim) instead?</summary>
+          <div class="help-body">
+            Put its address above (no key needed), then tell Servarr where people watch it:
+            <label for="player-viewer-url">Watch page URL (what your friends open)</label>
+            <input type="url" id="player-viewer-url" placeholder="https://watch.example.com" />
+            <label for="player-viewer-pass">Watch page password <span class="optional-badge">optional</span></label>
+            <input type="password" id="player-viewer-pass" autocomplete="off" placeholder="Added to the Watch Live link so nobody has to type it" />
+            <label for="player-admin-pass">Watch page admin password <span class="optional-badge">optional</span></label>
+            <input type="password" id="player-admin-pass" autocomplete="off" placeholder="Only ever sent to DJs" />
+          </div>
+        </details>
+        <label for="servarr-public-url">This Servarr's address, as DJs reach it</label>
+        <input type="url" id="servarr-public-url" placeholder="http://192.168.1.50:8888" />
+        <div class="field-hint">Used for the web-remote link DJs get. Its secret key is generated for you.</div>
+        <div class="result" id="result-player"></div>
 
         <div class="actions">
           <button class="btn btn-ghost" data-back="4">Back</button>
@@ -295,9 +324,13 @@
         <input type="number" id="mn-candidates" min="2" />
         <label for="mn-pause">Minutes to pause 4K upgrades during Movie Night</label>
         <input type="number" id="mn-pause" min="0" />
-        <label for="mn-dj-role">Movie Night DJ role ID <span class="optional-badge">optional</span></label>
-        <input type="text" id="mn-dj-role" placeholder="Lets this role use /play-movie without needing full Manage Server permission" />
-        <div class="field-hint">Leave blank and only members with Manage Server can use /play-movie.</div>
+        <div class="result" id="result-layout"></div>
+        <label for="mn-dj-role">Movie Night DJ role <span class="optional-badge">optional</span></label>
+        <select id="mn-dj-role"></select>
+        <div class="field-hint">Lets this role control Movie Night without full Manage Server permission. "None" means only Manage Server can.</div>
+        <label for="mn-control-channel">DJ control channel <span class="optional-badge">optional</span></label>
+        <select id="mn-control-channel"></select>
+        <div class="field-hint">Must be hidden from everyone except DJs/mods — the admin player link is posted there. Servarr checks and won't post in a public channel.</div>
 
         <div class="section-title">Leveling (XP)</div>
         <label for="xp-min">XP per message — minimum</label>
@@ -306,10 +339,22 @@
         <input type="number" id="xp-max" min="0" />
         <label for="xp-cooldown">Seconds between XP-earning messages</label>
         <input type="number" id="xp-cooldown" min="0" />
+        <label for="leaderboard-channel">Live leaderboard channel <span class="optional-badge">optional</span></label>
+        <select id="leaderboard-channel"></select>
 
         <div class="section-title">Moderation</div>
-        <label for="mod-log-channel">Mod-log channel ID <span class="optional-badge">optional</span></label>
-        <input type="text" id="mod-log-channel" placeholder="Leave blank to skip logging mod actions anywhere" />
+        <label for="mod-log-channel">Mod-log channel <span class="optional-badge">optional</span></label>
+        <select id="mod-log-channel"></select>
+        <label for="extra-readonly">Extra read-only channels <span class="optional-badge">optional</span></label>
+        <select id="extra-readonly" multiple size="5"></select>
+        <div class="field-hint">Applied when you run <code>/setup-server</code>. Ctrl/Cmd-click to pick several.</div>
+
+        <div class="section-title">Keep another bot's status board at the bottom <span class="optional-badge">advanced, optional</span></div>
+        <label for="tile-channel">Channel (dedicated to that board)</label>
+        <select id="tile-channel"></select>
+        <label for="tile-title">Text in the board's title</label>
+        <input type="text" id="tile-title" placeholder="e.g. Server Status" />
+        <div class="field-hint">When anything else posts in that channel, Servarr deletes the stale board so its bot re-posts it at the bottom, and removes stray posts. Only use it if that bot re-posts when its message is deleted.</div>
 
         <div class="result" id="result-6"></div>
         <div class="actions">
@@ -338,7 +383,8 @@
   let currentStep = 1;
   let authToken = null;
   let editMode = false;
-  const state = { discord: false, radarr: false, sonarr: false, plex: false, tautulli: false, reclaimarr: false };
+  const state = { discord: false, radarr: false, sonarr: false, plex: false, tautulli: false, reclaimarr: false, player: false };
+  let savedSettings = {};
 
   function $(sel) { return document.querySelector(sel); }
 
@@ -359,6 +405,7 @@
 
   function goToStep(n) {
     currentStep = n;
+    if (n === 6) loadLayout();
     document.querySelectorAll(".step").forEach((s) => s.classList.toggle("active", Number(s.dataset.step) === n));
     renderStepper();
   }
@@ -418,6 +465,68 @@
     }
   });
 
+  // ---- Discord server / channel / role pickers ----
+  function fillSelect(sel, items, current, noneLabel, valueKey) {
+    sel.innerHTML = "";
+    if (noneLabel !== null) {
+      const o = document.createElement("option");
+      o.value = ""; o.textContent = noneLabel; sel.appendChild(o);
+    }
+    const values = Array.isArray(current) ? current : [current];
+    let found = false;
+    items.forEach((it) => {
+      const o = document.createElement("option");
+      o.value = it[valueKey]; o.textContent = (valueKey === "name" || sel.id === "mod-log-channel") ? "#" + it.name : it.name;
+      if (sel.id === "mn-dj-role" || sel.id === "discord-guild") o.textContent = it.name;
+      if (values.includes(o.value)) { o.selected = true; found = true; }
+      sel.appendChild(o);
+    });
+    // Keep a saved value that no longer exists in the server visible, so
+    // saving doesn't silently wipe it.
+    values.filter((v) => v && !items.some((it) => it[valueKey] === v)).forEach((v) => {
+      const o = document.createElement("option");
+      o.value = v; o.textContent = v + " (not found)"; o.selected = true; sel.appendChild(o);
+    });
+  }
+
+  async function loadGuilds() {
+    const btn = $("#btn-load-guilds");
+    const token = changedFrom($("#discord-token")) ? $("#discord-token").value.trim() : "";
+    setBusy(btn, true);
+    try {
+      const res = await api("/api/setup/discord-guilds", { method: "POST", body: { token } });
+      const current = $("#discord-guild").value || $("#discord-guild").dataset.original || "";
+      fillSelect($("#discord-guild"), res.guilds, current, res.guilds.length ? "— pick your server —" : "— the bot isn't in any server yet —", "id");
+      if (!current && res.guilds.length === 1) $("#discord-guild").value = res.guilds[0].id;
+      $("#invite-link").href = res.invite_url;
+      $("#invite-row").style.display = "block";
+      showResult(2, true, res.guilds.length ? `Found ${res.guilds.length} server(s).` : "Token works. Now invite the bot to your server with the link below.");
+    } catch (e) {
+      showResult(2, false, e.message);
+    } finally {
+      setBusy(btn, false);
+    }
+  }
+  $("#btn-load-guilds").addEventListener("click", loadGuilds);
+
+  async function loadLayout() {
+    try {
+      if (!Object.keys(savedSettings).length) savedSettings = await api("/api/settings");
+      const res = await api("/api/setup/discord-layout");
+      const names = res.channels.map((c) => ({ id: c.id, name: c.name }));
+      fillSelect($("#mn-dj-role"), res.roles, savedSettings.movie_night_dj_role_id || "", "None (Manage Server only)", "id");
+      fillSelect($("#mod-log-channel"), names, savedSettings.mod_log_channel_id || "", "None (don't log)", "id");
+      fillSelect($("#mn-control-channel"), names, savedSettings.movie_night_control_channel || "", "None", "name");
+      fillSelect($("#leaderboard-channel"), names, savedSettings.leaderboard_channel || "", "None", "name");
+      fillSelect($("#extra-readonly"), names, savedSettings.extra_read_only_channels || [], null, "name");
+      fillSelect($("#tile-channel"), names, savedSettings.pinned_tile_channel || "", "Off", "name");
+      $("#result-layout").className = "result";
+      $("#result-layout").textContent = "";
+    } catch (e) {
+      showResult("layout", false, "Couldn't load your server's channels and roles: " + e.message);
+    }
+  }
+
   // ---- Step 2: Discord ----
   $("#btn-2-next").addEventListener("click", async () => {
     const btn = $("#btn-2-next");
@@ -431,6 +540,12 @@
         const res = await api("/api/setup/test-discord", { method: "POST", body: { token } });
         showResult(2, true, `Connected as ${res.username}.`);
         update.discord_bot_token = token;
+      }
+      if (!guild && $("#discord-guild").options.length <= 1) {
+        await api("/api/connections", { method: "POST", body: update });
+        state.discord = true;
+        await loadGuilds();
+        return;
       }
       await api("/api/connections", { method: "POST", body: update });
       state.discord = true;
@@ -540,6 +655,27 @@
     }
   });
 
+  // ---- Movie Night player pairing ----
+  async function pairPlayer() {
+    const url = $("#player-url").value.trim().replace(/\/$/, "");
+    const key = $("#player-key").value.trim();
+    if (!url) throw new Error("Paste the player's pair code first.");
+    const res = await api("/api/setup/pair-player", { method: "POST", body: { url, key } });
+    $("#player-url").value = res.url;
+    markOriginal($("#player-url"));
+    $("#player-key").value = "";
+    markOriginal($("#player-key"));
+    state.player = true;
+    const kind = res.mode === "movienight" ? "" : " (Plex Companion player — set the watch page below)";
+    showResult("player", true, `Paired with ${res.name}${kind}.` + (res.ready === false ? " It isn't signed in to Plex yet — finish that on the player's setup page." : ""));
+    return res;
+  }
+  $("#btn-pair-player").addEventListener("click", async () => {
+    const btn = $("#btn-pair-player");
+    setBusy(btn, true);
+    try { await pairPlayer(); } catch (e) { showResult("player", false, e.message); } finally { setBusy(btn, false); }
+  });
+
   // ---- Step 5: Reclaimarr (Movie Night) ----
   $("#btn-5-next").addEventListener("click", async () => {
     const btn = $("#btn-5-next");
@@ -565,6 +701,21 @@
       return;
     }
     try {
+      const playerUrl = $("#player-url").value.trim().replace(/\/$/, "");
+      if (playerUrl && (changedFrom($("#player-key")) || playerUrl !== ($("#player-url").dataset.original || ""))) {
+        await pairPlayer();
+      }
+      if (!playerUrl && $("#player-url").dataset.original) update.neko_mpv_shim_url = "";
+      update.neko_mpv_public_url = $("#player-viewer-url").value.trim().replace(/\/$/, "");
+      if (changedFrom($("#player-viewer-pass"))) update.neko_mpv_password = $("#player-viewer-pass").value;
+      if (changedFrom($("#player-admin-pass"))) update.neko_mpv_admin_password = $("#player-admin-pass").value;
+      update.servarr_public_url = $("#servarr-public-url").value.trim().replace(/\/$/, "") || window.location.origin;
+    } catch (e) {
+      showResult("player", false, e.message);
+      setBusy(btn, false);
+      return;
+    }
+    try {
       if (Object.keys(update).length) await api("/api/connections", { method: "POST", body: update });
       goToStep(6);
     } catch (e) {
@@ -584,13 +735,23 @@
         movie_night_hour_utc: Number($("#mn-play-hour").value),
         movie_night_candidate_count: Number($("#mn-candidates").value),
         movie_night_pause_upgrade_minutes: Number($("#mn-pause").value),
-        movie_night_dj_role_id: $("#mn-dj-role").value.trim(),
+        movie_night_dj_role_id: $("#mn-dj-role").value,
+        movie_night_control_channel: $("#mn-control-channel").value,
+        leaderboard_channel: $("#leaderboard-channel").value,
+        extra_read_only_channels: Array.from($("#extra-readonly").selectedOptions).map((o) => o.value),
+        pinned_tile_channel: $("#tile-channel").value,
+        pinned_tile_title_match: $("#tile-title").value.trim(),
         xp_min_per_message: Number($("#xp-min").value),
         xp_max_per_message: Number($("#xp-max").value),
         xp_cooldown_seconds: Number($("#xp-cooldown").value),
-        mod_log_channel_id: $("#mod-log-channel").value.trim(),
+        mod_log_channel_id: $("#mod-log-channel").value,
       };
-      await api("/api/settings", { method: "POST", body: update });
+      if (update.pinned_tile_channel && !update.pinned_tile_title_match) {
+        showResult(6, false, "To keep a status board at the bottom, also enter text from its title (or set the channel to Off).");
+        setBusy(btn, false);
+        return;
+      }
+      savedSettings = await api("/api/settings", { method: "POST", body: update });
       buildSummary();
       goToStep(7);
     } catch (e) {
@@ -609,6 +770,7 @@
       ["Plex", state.plex],
       ["Tautulli", state.tautulli],
       ["Movie Night (Reclaimarr)", state.reclaimarr],
+      ["Movie Night player", state.player],
       ["Advanced settings", true],
     ];
     $("#summary").innerHTML = rows
@@ -634,6 +796,7 @@
       editMode = true;
       $("#tagline").textContent = "Editing settings — jump to any section below.";
       prefill(connections, settingsData);
+      if (connections.discord_bot_token.is_set) loadGuilds();
       $("#steps-container").style.display = "block";
       document.querySelector('.step[data-step="1"]').remove(); // no re-creating the admin login in edit mode
       goToStep(2);
@@ -651,7 +814,9 @@
   }
 
   function prefill(connections, settingsData) {
-    prefillField($("#discord-guild"), connections.discord_guild_id.value);
+    const g = connections.discord_guild_id.value;
+    $("#discord-guild").dataset.original = g || "";
+    if (g) $("#discord-guild").innerHTML = `<option value="${g}" selected>Saved server (loading the list…)</option>`;
     if (connections.discord_bot_token.is_set) { $("#discord-token").placeholder = connections.discord_bot_token.value; state.discord = true; }
     prefillField($("#radarr-url"), connections.radarr_url.value);
     if (connections.radarr_api_key.is_set) { $("#radarr-key").placeholder = connections.radarr_api_key.value; state.radarr = true; }
@@ -664,16 +829,26 @@
     prefillField($("#reclaimarr-url"), connections.reclaimarr_url.value);
     prefillField($("#reclaimarr-user"), connections.reclaimarr_auth_user.value);
     if (connections.reclaimarr_auth_pass.is_set) { $("#reclaimarr-pass").placeholder = connections.reclaimarr_auth_pass.value; state.reclaimarr = true; }
+    prefillField($("#player-url"), connections.neko_mpv_shim_url.value);
+    if (connections.neko_mpv_shim_url.value) {
+      state.player = true;
+      showResult("player", true, "Paired with the player at " + connections.neko_mpv_shim_url.value + (connections.player_mode.value === "companion" ? " (Plex Companion player)." : "."));
+    }
+    if (connections.player_key.is_set) $("#player-key").placeholder = connections.player_key.value;
+    prefillField($("#player-viewer-url"), connections.neko_mpv_public_url.value);
+    if (connections.neko_mpv_password.is_set) $("#player-viewer-pass").placeholder = connections.neko_mpv_password.value;
+    if (connections.neko_mpv_admin_password.is_set) $("#player-admin-pass").placeholder = connections.neko_mpv_admin_password.value;
+    prefillField($("#servarr-public-url"), connections.servarr_public_url.value);
+    savedSettings = settingsData;
 
     $("#mn-vote-hour").value = settingsData.movie_night_vote_hour_utc;
     $("#mn-play-hour").value = settingsData.movie_night_hour_utc;
     $("#mn-candidates").value = settingsData.movie_night_candidate_count;
     $("#mn-pause").value = settingsData.movie_night_pause_upgrade_minutes;
-    $("#mn-dj-role").value = settingsData.movie_night_dj_role_id || "";
+    $("#tile-title").value = settingsData.pinned_tile_title_match || "";
     $("#xp-min").value = settingsData.xp_min_per_message;
     $("#xp-max").value = settingsData.xp_max_per_message;
     $("#xp-cooldown").value = settingsData.xp_cooldown_seconds;
-    $("#mod-log-channel").value = settingsData.mod_log_channel_id || "";
   }
 
   // ---- Boot ----
@@ -686,6 +861,7 @@
       }
     } catch (e) { /* fall through to showing the first-run wizard anyway */ }
     $("#steps-container").style.display = "block";
+    $("#servarr-public-url").value = window.location.origin;
     goToStep(1);
   })();
 </script>

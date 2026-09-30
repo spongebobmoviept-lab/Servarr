@@ -1,0 +1,10 @@
+.git
+.env
+.env.*
+data/
+docs/
+tests/
+__pycache__/
+*.pyc
+*.log
+*.bak*

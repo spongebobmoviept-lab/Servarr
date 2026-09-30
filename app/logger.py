@@ -13,6 +13,11 @@ _lock = asyncio.Lock()
 
 _REDACT_PATTERNS = [
     (re.compile(r"([?&](?:api_?key|token)=)[^&\s'\"]+", re.IGNORECASE), r"\1***redacted***"),
+    # httpx errors include the full URL: Plex tokens, the player's
+    # auto-login password (?pwd=) and the /mpv-remote key (#key=).
+    (re.compile(r"([?&]X-Plex-Token=)[^&\s'\"]+", re.IGNORECASE), r"\1***redacted***"),
+    (re.compile(r"([?&#](?:pwd|key)=)[^&\s'\"]+", re.IGNORECASE), r"\1***redacted***"),
+    (re.compile(r"(discord(?:app)?\.com/api/webhooks/\d+/)[^\s'\"]+", re.IGNORECASE), r"\1***redacted***"),
 ]
 
 

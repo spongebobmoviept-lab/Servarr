@@ -8,8 +8,11 @@ the pick with a surprise 4K swap mid-movie.
 
 import asyncio
 import datetime
+import json
 import random
 import urllib.parse
+from dataclasses import asdict
+from pathlib import Path
 from typing import Optional
 
 import discord
@@ -24,13 +27,255 @@ _client: Optional[discord.Client] = None
 _current_vote: dict = {}
 
 
+def _vote_state_path() -> Path:
+    return Path(settings.data_dir) / "movie_night_vote.json"
+
+
+def _save_vote_state() -> None:
+    """Persists the in-memory vote across restarts — otherwise a
+    redeploy between the vote posting (post_vote) and showtime
+    (announce_winner) silently wiped _current_vote, and announce_winner's
+    "no candidates on record" case returns False with no error at all, so
+    showtime just quietly did nothing and nobody found out until the movie
+    never started. Best-effort: a write failure here shouldn't crash the
+    bot over what's ultimately just a convenience cache.
+    """
+    try:
+        path = _vote_state_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = {
+            "candidates": [asdict(m) for m in _current_vote.get("candidates", [])],
+            "votes": {str(k): v for k, v in _current_vote.get("votes", {}).items()},
+        }
+        path.write_text(json.dumps(data))
+    except Exception as exc:  # noqa: BLE001
+        pass
+
+
+def _load_vote_state() -> None:
+    path = _vote_state_path()
+    if not path.exists():
+        return
+    try:
+        data = json.loads(path.read_text())
+        _current_vote["candidates"] = [radarr.LibraryMovie(**c) for c in data.get("candidates", [])]
+        _current_vote["votes"] = {int(k): v for k, v in data.get("votes", {}).items()}
+    except Exception as exc:  # noqa: BLE001
+        pass
+
+
+def _clear_vote_state() -> None:
+    _current_vote.clear()
+    try:
+        _vote_state_path().unlink(missing_ok=True)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def set_client(client: discord.Client) -> None:
     global _client
     _client = client
+    _load_vote_state()
 
 
 def _vote_channel(guild: discord.Guild) -> Optional[discord.TextChannel]:
     return discord.utils.get(guild.text_channels, name="general")
+
+
+def _commander_channel(guild: discord.Guild) -> Optional[discord.TextChannel]:
+    """Admin-only player controls, for DJs/mods — a more reliable delivery
+    of the admin link than an ephemeral reply (easy to miss) or a DM (fails
+    silently when the recipient has DMs closed). Name comes from
+    MOVIE_NIGHT_CONTROL_CHANNEL.
+
+    Returns None (and logs) if the channel is visible to @everyone or the
+    rules-gate Member role: the admin link carries the player's admin
+    password, so it's only ever posted in a channel that is actually private.
+    """
+    channel = discord.utils.get(guild.text_channels, name=settings.movie_night_control_channel)
+    if channel is None:
+        return None
+    public_roles = [guild.default_role]
+    member_role = discord.utils.get(guild.roles, name="Member")
+    if member_role is not None:
+        public_roles.append(member_role)
+    for role in public_roles:
+        if channel.permissions_for(role).view_channel:
+            _warn_public_control_channel(channel.name, role.name)
+            return None
+    return channel
+
+
+_warned_public_channels: set[str] = set()
+
+
+def _warn_public_control_channel(channel_name: str, role_name: str) -> None:
+    if channel_name in _warned_public_channels:
+        return
+    _warned_public_channels.add(channel_name)
+    print(
+        f"movie_night: #{channel_name} is visible to {role_name} — not posting admin controls there. "
+        "Make it visible to DJs/mods only.",
+        flush=True,
+    )
+
+
+async def _check_dj(interaction: discord.Interaction) -> bool:
+    if isinstance(interaction.user, discord.Member) and _is_dj_member(interaction.user):
+        return True
+    await interaction.response.send_message("Only a Movie Night DJ/mod can control playback.", ephemeral=True)
+    return False
+
+
+class MovieSearchModal(discord.ui.Modal, title="Search your Plex library"):
+    """Lets a DJ search-and-play without ever leaving Discord or
+    typing a slash command — the control-channel panel button that opens
+    this is otherwise just a link + a few transport buttons, which isn't
+    "complete" on its own if starting something new still requires
+    /play-movie. Reuses play_specific's exact search/pick/play logic
+    (single match plays directly, multiple shows a picker) so there's only
+    one implementation of "search the downloaded library" to maintain.
+    """
+
+    query = discord.ui.TextInput(label="Movie title", placeholder="e.g. Inception")
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        await interaction.response.defer(ephemeral=True)
+        await play_specific(interaction, str(self.query))
+
+
+class CommanderPanelView(discord.ui.View):
+    """The always-on control panel in the Movie Night control channel — persistent
+    (fixed custom_id per button, registered via client.add_view in
+    bot.py's on_ready) so it keeps working across every redeploy, unlike
+    add_transport_buttons' one-off buttons on each "Now playing" message
+    (those are fine to lose on restart — a fresh one posts next movie).
+    """
+
+    def __init__(self) -> None:
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="⏯", style=discord.ButtonStyle.secondary, custom_id="commander_panel:pause_resume", row=0)
+    async def pause_resume(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not await _check_dj(interaction):
+            return
+        status = await mpv_control.get_status()
+        if status["state"] == "playing":
+            await mpv_control.pause()
+            await interaction.response.send_message("⏸️ Paused.", ephemeral=True)
+        elif status["state"] == "paused":
+            await mpv_control.resume()
+            await interaction.response.send_message("▶️ Resumed.", ephemeral=True)
+        else:
+            await interaction.response.send_message("Nothing's playing right now.", ephemeral=True)
+
+    @discord.ui.button(label="⏪ 10s", style=discord.ButtonStyle.secondary, custom_id="commander_panel:seek_back", row=0)
+    async def seek_back(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not await _check_dj(interaction):
+            return
+        position = await mpv_control.seek(-10)
+        if position is None:
+            await interaction.response.send_message("Nothing's loaded right now.", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"⏪ Now at {position // 60}:{position % 60:02d}.", ephemeral=True)
+
+    @discord.ui.button(label="10s ⏩", style=discord.ButtonStyle.secondary, custom_id="commander_panel:seek_fwd", row=0)
+    async def seek_fwd(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not await _check_dj(interaction):
+            return
+        position = await mpv_control.seek(10)
+        if position is None:
+            await interaction.response.send_message("Nothing's loaded right now.", ephemeral=True)
+        else:
+            await interaction.response.send_message(f"⏩ Now at {position // 60}:{position % 60:02d}.", ephemeral=True)
+
+    @discord.ui.button(label="⏹ Stop", style=discord.ButtonStyle.danger, custom_id="commander_panel:stop", row=0)
+    async def stop(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not await _check_dj(interaction):
+            return
+        ok = await mpv_control.stop()
+        await interaction.response.send_message("⏹️ Stopped." if ok else "⚠️ Couldn't stop it.", ephemeral=True)
+
+    @discord.ui.button(label="🔍 Search & Play", style=discord.ButtonStyle.primary, custom_id="commander_panel:search", row=1)
+    async def search_play(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        if not await _check_dj(interaction):
+            return
+        await interaction.response.send_modal(MovieSearchModal())
+
+
+_PANEL_MARKER = "commander-panel-v1"
+
+
+async def refresh_commander_panel(guild: discord.Guild) -> None:
+    """Idempotent: checks for an already-posted panel (by its footer
+    marker) before posting a new one, so a redeploy/restart doesn't spam a
+    duplicate panel into the channel every time. Called from bot.py's
+    on_ready, right after the persistent view itself gets registered.
+    """
+    channel = _commander_channel(guild)
+    if channel is None:
+        return
+    try:
+        async for old in channel.history(limit=20):
+            if old.embeds and old.embeds[0].footer and old.embeds[0].footer.text == _PANEL_MARKER:
+                return
+    except Exception as exc:  # noqa: BLE001
+        await log(f"movie_night: couldn't check #{channel.name} history: {exc}")
+        return
+    link = mpv_control.admin_link()
+    if not link:
+        return
+    embed = discord.Embed(
+        title="🔑 Movie Night DJ Controls",
+        description=(
+            f"[Open admin Neko link]({link}) — pick your own name when Neko asks.\n\n"
+            "The buttons below work anytime, whether or not a movie is currently loaded — "
+            "**Search & Play** finds anything in the downloaded library without needing a slash command."
+        ),
+        color=GOLD,
+    )
+    embed.set_footer(text=_PANEL_MARKER)
+    try:
+        await channel.send(embed=embed, view=CommanderPanelView())
+    except Exception as exc:  # noqa: BLE001
+        await log(f"movie_night: couldn't post commander panel: {exc}")
+
+
+_NOW_PLAYING_MARKER = "commander-nowplaying-v1"
+
+
+async def _post_admin_now_playing(guild: discord.Guild, title: str, year: Optional[int]) -> None:
+    """Edits one persistent 'now playing' message in place (by footer
+    marker, same idempotent pattern as refresh_commander_panel) instead of
+    sending a new one every time a movie starts — this used to post a fresh
+    message daily, leaving the admin link (with the real Neko admin
+    password baked into the URL) sitting in an ever-growing pile of old
+    messages instead of one current, live one.
+    """
+    channel = _commander_channel(guild)
+    if channel is None:
+        return
+    link = mpv_control.admin_link()
+    if not link:
+        return
+    embed = discord.Embed(title="🎬 Now playing (admin)", color=GOLD)
+    embed.description = f"**{title}**" + (f" ({year})" if year else "") + f"\n[Open admin controls]({link}) — pick your own name when Neko asks."
+    embed.set_footer(text=_NOW_PLAYING_MARKER)
+    view = discord.ui.View()
+    view.add_item(discord.ui.Button(label="🔑  ADMIN CONTROLS", style=discord.ButtonStyle.link, url=link))
+    add_transport_buttons(view)
+    try:
+        existing = None
+        async for old in channel.history(limit=20):
+            if old.author == guild.me and old.embeds and old.embeds[0].footer and old.embeds[0].footer.text == _NOW_PLAYING_MARKER:
+                existing = old
+                break
+        if existing:
+            await existing.edit(embed=embed, view=view)
+        else:
+            await channel.send(embed=embed, view=view)
+    except Exception as exc:  # noqa: BLE001
+        await log(f"movie_night: couldn't post to #{channel.name}: {exc}")
 
 
 def _is_dj_member(member: discord.Member) -> bool:
@@ -59,7 +304,7 @@ def _require_dj(handler):
     """
 
     async def wrapped(interaction: discord.Interaction) -> None:
-        if not _is_dj_member(interaction.user):
+        if not isinstance(interaction.user, discord.Member) or not _is_dj_member(interaction.user):
             await interaction.response.send_message("Only a Movie Night DJ/mod can control playback.", ephemeral=True)
             return
         await handler(interaction)
@@ -128,7 +373,7 @@ async def _dm_admin_links(guild: discord.Guild) -> None:
     different button URLs to different viewers, so this is the only way
     for the nightly automated announcement (as opposed to a manual
     /play-movie run, which already gets this via _send_admin_link) to give
-    Commanders control without them having to ask for it separately.
+    DJs control without them having to ask for it separately.
     Best-effort per member — a closed-DMs error shouldn't stop the others.
     """
     link = mpv_control.admin_link()
@@ -145,6 +390,32 @@ async def _dm_admin_links(guild: discord.Guild) -> None:
             await log(f"movie_night: couldn't DM admin link to {member}: {exc}")
 
 
+def _build_vote_embed(candidates: list, votes: dict) -> discord.Embed:
+    """Rebuilds the poll embed from scratch with a live tally + who voted
+    for what — called both for the initial post and after every single
+    vote, so the count is always visible in the poll message itself rather
+    than hidden behind each voter's own private "you voted" receipt
+    (a private receipt reads as "the whole vote is
+    hidden" even though the candidate list itself was always public).
+    """
+    tally: dict[int, list[int]] = {m.id: [] for m in candidates}
+    for voter_id, movie_id in votes.items():
+        tally.setdefault(movie_id, []).append(voter_id)
+
+    embed = discord.Embed(
+        title="🍿 Vote for tonight's Movie Night!",
+        description="Pick one below — whichever gets the most votes plays tonight. No votes in by showtime? I'll just pick one at random.",
+        color=GOLD,
+    )
+    for m in candidates:
+        voter_ids = tally.get(m.id, [])
+        count_label = "1 vote" if len(voter_ids) == 1 else f"{len(voter_ids)} votes"
+        voters = ", ".join(f"<@{uid}>" for uid in voter_ids) if voter_ids else "​"
+        year = f" ({m.year})" if m.year else ""
+        embed.add_field(name=f"{m.title}{year} — {count_label}", value=voters, inline=False)
+    return embed
+
+
 class VoteView(discord.ui.View):
     """Not persistent across restarts on purpose — each night's candidates
     are different, so there's nothing meaningful to resume after a restart
@@ -154,15 +425,21 @@ class VoteView(discord.ui.View):
 
     def __init__(self, candidates: list) -> None:
         super().__init__(timeout=None)
+        self.candidates = candidates
         for movie in candidates:
             btn = discord.ui.Button(label=movie.title[:75], style=discord.ButtonStyle.primary)
-            btn.callback = self._make_vote(movie.id, movie.title)
+            btn.callback = self._make_vote(movie.id)
             self.add_item(btn)
 
-    def _make_vote(self, movie_id: int, title: str):
+    def _make_vote(self, movie_id: int):
         async def _cb(interaction: discord.Interaction) -> None:
             _current_vote.setdefault("votes", {})[interaction.user.id] = movie_id
-            await interaction.response.send_message(f"🗳️ Voted for **{title}**!", ephemeral=True)
+            _save_vote_state()
+            # Edits the poll message itself (visible to everyone in the
+            # channel) instead of replying with a private ephemeral
+            # confirmation — the updated tally IS the confirmation.
+            embed = _build_vote_embed(self.candidates, _current_vote["votes"])
+            await interaction.response.edit_message(embed=embed, view=self)
 
         return _cb
 
@@ -178,17 +455,11 @@ async def post_vote(guild: discord.Guild) -> bool:
         return False
 
     picks = random.sample(candidates, min(settings.movie_night_candidate_count, len(candidates)))
-    embed = discord.Embed(
-        title="🍿 Vote for tonight's Movie Night!",
-        description="Pick one below — whichever gets the most votes plays tonight. No votes in by showtime? I'll just pick one at random.",
-        color=GOLD,
-    )
-    for m in picks:
-        embed.add_field(name=m.title, value=str(m.year) if m.year else "​", inline=True)
-
     _current_vote.clear()
     _current_vote["candidates"] = picks
     _current_vote["votes"] = {}
+    _save_vote_state()
+    embed = _build_vote_embed(picks, {})
     await channel.send(content="@everyone", embed=embed, view=VoteView(picks))
     return True
 
@@ -196,6 +467,13 @@ async def post_vote(guild: discord.Guild) -> bool:
 async def announce_winner(guild: discord.Guild, is_test: bool = False) -> bool:
     candidates = _current_vote.get("candidates")
     if not candidates:
+        # This can happen for real: a restart between
+        # post_vote and showtime used to silently wipe _current_vote (now
+        # persisted to disk — see _save_vote_state/_load_vote_state — so
+        # this should be rare going forward), and showtime would then just
+        # quietly do nothing with zero error anywhere. At minimum, log it
+        # so a miss is visible instead of invisible.
+        await log("movie_night: showtime reached but no vote is on record — skipping (was a vote posted tonight?)")
         return False
     channel = _vote_channel(guild)
     if channel is None:
@@ -245,9 +523,11 @@ async def announce_winner(guild: discord.Guild, is_test: bool = False) -> bool:
     if winner.poster_url:
         embed.set_image(url=winner.poster_url)
     await channel.send(content=None if is_test else "@everyone", embed=embed, view=view)
-    if started and not is_test:
-        await _dm_admin_links(guild)
-    _current_vote.clear()
+    if started:
+        await _post_admin_now_playing(guild, winner.title, winner.year)
+        if not is_test:
+            await _dm_admin_links(guild)
+    _clear_vote_state()
     return True
 
 
@@ -264,7 +544,7 @@ async def start_in_neko(movie: "radarr.LibraryMovie") -> bool:
     try:
         return await mpv_control.play(movie.title, movie.year)
     except Exception as exc:  # noqa: BLE001
-        await log(f"movie_night: neko-mpv automation failed: {exc}")
+        await log(f"movie_night: neko-mpv automation failed: {exc!r}")
         return False
 
 
@@ -276,7 +556,7 @@ async def stop_movie() -> bool:
     try:
         return await mpv_control.stop()
     except Exception as exc:  # noqa: BLE001
-        await log(f"movie_night: stopping playback failed: {exc}")
+        await log(f"movie_night: stopping playback failed: {exc!r}")
         return False
 
 
@@ -302,6 +582,8 @@ async def play_now(channel: discord.abc.Messageable, movie: "radarr.LibraryMovie
     if movie.poster_url:
         embed.set_image(url=movie.poster_url)
     await channel.send(embed=embed, view=view)
+    if started and getattr(channel, "guild", None) is not None:
+        await _post_admin_now_playing(channel.guild, movie.title, movie.year)
     return started
 
 
@@ -384,6 +666,7 @@ async def force_winner_now(guild: discord.Guild) -> bool:
         _current_vote.clear()
         _current_vote["candidates"] = [random.choice(candidates)]
         _current_vote["votes"] = {}
+        _save_vote_state()
     return await announce_winner(guild, is_test=True)
 
 

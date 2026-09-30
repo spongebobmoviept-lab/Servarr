@@ -1,3 +1,4 @@
+import hmac
 import time
 from collections import defaultdict
 from typing import Optional
@@ -55,32 +56,53 @@ def require_login(request: Request, credentials: HTTPBasicCredentials = Depends(
 
 
 MPV_REMOTE_COOKIE = "mpv_remote_key"
+REMOTE_KEY_HEADER = "X-Remote-Key"
+
+
+def remote_key_matches(candidate: Optional[str]) -> bool:
+    """Constant-time comparison against MPV_REMOTE_KEY. Always False when no
+    key is configured, so an empty key can never unlock anything."""
+    expected = settings.mpv_remote_key
+    if not expected or not candidate:
+        return False
+    return hmac.compare_digest(candidate.encode(), expected.encode())
+
+
+def check_remote_key(request: Request, candidate: str) -> bool:
+    """Throttled key check — shares the per-IP failed-attempt window with
+    the admin login, so the key can't be brute-forced either."""
+    client_ip = request.client.host if request.client else "unknown"
+    now = time.time()
+    attempts = _failed_attempts[client_ip]
+    attempts[:] = [t for t in attempts if now - t < _WINDOW_SECONDS]
+    if len(attempts) >= _MAX_ATTEMPTS:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many failed attempts — try again in a few minutes")
+    if remote_key_matches(candidate):
+        return True
+    attempts.append(now)
+    return False
 
 
 def require_login_or_remote_key(
     request: Request, credentials: Optional[HTTPBasicCredentials] = Depends(_optional_security)
 ) -> str:
     """Lets the /mpv-remote page and its API calls work from a plain link
-    (see mpv_remote_page/bot.py's mpv-play command) instead of a Basic Auth
-    popup — checks against its own dedicated settings.mpv_remote_key (a
-    plain alphanumeric token, not a reused password — see config.py for why).
+    instead of a Basic Auth popup, using the dedicated MPV_REMOTE_KEY.
 
-    Checks the cookie first (works fine for the standalone page, opened
-    top-level), then a `key` query param as a fallback — confirmed live
-    that the cookie alone breaks entirely on Safari when this page is
-    loaded inside the native Playback tab's iframe, since Safari blocks
-    cookies in third-party iframe contexts by default with no user-facing
-    setting to change. mpv-remote.html's own JS carries the key explicitly
-    on every request specifically so this fallback gets used there,
-    working identically regardless of cookie support.
+    The key is accepted from the X-Remote-Key header (what the page's own
+    JS sends on every request — works even inside an iframe where the
+    browser blocks third-party cookies) or from the HttpOnly cookie set by
+    POST /api/mpv/login. It is deliberately NOT accepted as a query
+    parameter: a secret in a URL ends up in server/proxy access logs,
+    browser history and Referer headers.
 
-    Falls back to the normal admin login for anyone who navigates to the
-    page directly with neither (bookmarked, no key at all).
+    Anyone without a key falls back to the normal admin login.
     """
-    if settings.mpv_remote_key and request.cookies.get(MPV_REMOTE_COOKIE) == settings.mpv_remote_key:
-        return "remote-key"
-    if settings.mpv_remote_key and request.query_params.get("key") == settings.mpv_remote_key:
-        return "remote-key"
+    candidate = request.headers.get(REMOTE_KEY_HEADER) or request.cookies.get(MPV_REMOTE_COOKIE)
+    if candidate and settings.mpv_remote_key:
+        if check_remote_key(request, candidate):
+            return "remote-key"
+        raise HTTPException(status_code=401, detail="Invalid remote key")
     if credentials is not None:
         return check_credentials(request, credentials)
     raise HTTPException(status_code=401, detail="Login required", headers={"WWW-Authenticate": "Basic"})

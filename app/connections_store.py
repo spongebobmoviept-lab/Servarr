@@ -12,6 +12,10 @@ PLAIN_KEYS = [
     "reclaimarr_url",
     "reclaimarr_auth_user",
     "plex_url",
+    "neko_mpv_shim_url",
+    "player_mode",
+    "neko_mpv_public_url",
+    "servarr_public_url",
 ]
 # Secret fields: never returned in full — masked on read, only overwritten
 # when the caller actually sends a new (non-empty) value.
@@ -22,6 +26,10 @@ SECRET_KEYS = [
     "tautulli_api_key",
     "reclaimarr_auth_pass",
     "plex_token",
+    "player_key",
+    "neko_mpv_password",
+    "neko_mpv_admin_password",
+    "mpv_remote_key",
 ]
 
 ALL_KEYS = PLAIN_KEYS + SECRET_KEYS
@@ -83,3 +91,34 @@ def save_overrides(update: dict) -> dict:
         setattr(settings, key, value)
     _persist_all()
     return current_display()
+
+
+def ensure_remote_key() -> bool:
+    """Generates and saves a random MPV_REMOTE_KEY on first start if none is
+    set, so the /mpv-remote link works without anyone inventing a secret.
+    Returns True if a new key was created."""
+    import secrets
+
+    if settings.mpv_remote_key:
+        return False
+    settings.mpv_remote_key = secrets.token_urlsafe(24).replace("-", "").replace("_", "")
+    _persist_all()
+    return True
+
+
+def auto_pair_from_file() -> bool:
+    """Zero-click pairing for the bundle: if no player is configured yet and
+    a movienight player has exported pair.json into the shared volume, use
+    it. Returns True if a player was paired."""
+    from . import mpv_control
+
+    if settings.neko_mpv_shim_url or not settings.player_pair_file:
+        return False
+    data = mpv_control.load_pair_file(settings.player_pair_file)
+    if not data:
+        return False
+    settings.neko_mpv_shim_url = data["url"]
+    settings.player_key = data["key"]
+    settings.player_mode = "movienight"
+    _persist_all()
+    return True
