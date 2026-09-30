@@ -115,6 +115,21 @@
 
   .already-done { text-align: center; padding: 1rem 0; }
   .edit-banner { text-align: center; color: var(--text-muted); font-size: 0.85rem; margin-bottom: 1.25rem; }
+
+  .mode-choices { display: grid; gap: 0.75rem; }
+  .mode-card {
+    display: block; width: 100%; text-align: left; cursor: pointer; font: inherit; color: var(--text);
+    background: var(--bg-elevated-2); border: 1px solid var(--border); border-radius: 10px; padding: 1rem 1.1rem;
+  }
+  .mode-card strong { display: block; font-size: 1rem; margin-bottom: 0.25rem; }
+  .mode-card span { display: block; color: var(--text-muted); font-size: 0.85rem; }
+  .mode-card:hover:not(:disabled) { border-color: var(--gold-dim); }
+  .mode-card.selected { border-color: var(--gold); box-shadow: inset 0 0 0 1px var(--gold); }
+  .mode-card:disabled { cursor: not-allowed; opacity: 0.55; }
+  .mode-card.selected:disabled { opacity: 1; }
+  a.btn { display: inline-block; text-decoration: none; }
+  label.check { color: var(--text); font-size: 0.9rem; cursor: pointer; }
+  label.check input { margin: 0 0.45rem 0 0; vertical-align: middle; }
 </style>
 </head>
 <body>
@@ -131,8 +146,8 @@
 
     <!-- Edit-mode login gate -->
     <div id="login-gate" class="already-done" style="display:none;">
-      <h2>Log in to edit settings</h2>
-      <p class="sub">This instance is already set up. Log in to change anything.</p>
+      <h2 id="login-title">Log in to edit settings</h2>
+      <p class="sub" id="login-sub">This instance is already set up. Log in to change anything.</p>
       <label for="login-username">Username</label>
       <input type="text" id="login-username" autocomplete="username" />
       <label for="login-password">Password</label>
@@ -146,6 +161,28 @@
 
     <div id="steps-container" style="display:none;">
 
+      <!-- Mode: the first choice on a fresh install, and where to switch later -->
+      <section class="step" data-step="mode">
+        <h2>What should Servarr do?</h2>
+        <p class="sub">Pick one. You can switch later from this page.</p>
+        <div class="mode-choices">
+          <button type="button" class="mode-card" data-mode-choice="full">
+            <strong>Everything</strong>
+            <span>Movie Night plus release calendars, leveling, moderation and a now-playing board. For people who run their own Plex server (with Sonarr/Radarr).</span>
+          </button>
+          <button type="button" class="mode-card" data-mode-choice="movienight">
+            <strong>Movie Night only</strong>
+            <span>Just the watch party: the vote, /play-movie and the DJ controls for the Movie Night player. For a Discord mod or streamer who uses a friend's Plex server.</span>
+          </button>
+        </div>
+        <div class="field-hint" id="mode-locked-note" style="display:none;">The mode is set by <code>SERVARR_MODE</code> in the container's settings, so it can't be changed here.</div>
+        <div class="result" id="result-mode"></div>
+        <div class="actions">
+          <span></span>
+          <button class="btn btn-gold" id="btn-mode-next" style="display:none;">Continue</button>
+        </div>
+      </section>
+
       <!-- Step 1: Admin login (first-run only) -->
       <section class="step" data-step="1">
         <h2>Create your login</h2>
@@ -158,10 +195,13 @@
         <input type="password" id="admin-password-confirm" autocomplete="new-password" />
         <div class="result" id="result-1"></div>
         <div class="actions">
-          <span></span>
+          <button class="btn btn-ghost" data-back="mode">Back</button>
           <button class="btn btn-gold" id="btn-1-next">Continue</button>
         </div>
       </section>
+
+      <!-- only:full -->
+      <div data-only="full">
 
       <!-- Step 2: Discord -->
       <section class="step" data-step="2">
@@ -316,6 +356,7 @@
         <p class="sub">Everything here ships with a reasonable default — only change what you care about.</p>
 
         <div class="section-title">Movie Night timing</div>
+        <label class="check" for="mn-daily-full"><input type="checkbox" id="mn-daily-full" checked /> Post the vote every day and start the winner automatically</label>
         <label for="mn-vote-hour">Vote opens (UTC hour, 0-23)</label>
         <input type="number" id="mn-vote-hour" min="0" max="23" />
         <label for="mn-play-hour">Winner announced/played (UTC hour, 0-23)</label>
@@ -325,6 +366,9 @@
         <label for="mn-pause">Minutes to pause 4K upgrades during Movie Night</label>
         <input type="number" id="mn-pause" min="0" />
         <div class="result" id="result-layout"></div>
+        <label for="mn-vote-channel">Movie Night channel <span class="optional-badge">optional</span></label>
+        <select id="mn-vote-channel" data-kind="channel"></select>
+        <div class="field-hint">Where the vote, the announcement and the Watch Live button are posted.</div>
         <label for="mn-dj-role">Movie Night DJ role <span class="optional-badge">optional</span></label>
         <select id="mn-dj-role"></select>
         <div class="field-hint">Lets this role control Movie Night without full Manage Server permission. "None" means only Manage Server can.</div>
@@ -374,44 +418,188 @@
         </div>
       </section>
 
+      </div>
+      <!-- /only:full -->
+
+      <!-- only:movienight -->
+      <div data-only="movienight">
+
+      <!-- Movie Night only: bot token -->
+      <section class="step" data-step="mn-token">
+        <h2>Connect your Discord bot</h2>
+        <p class="sub">Paste the bot's token. Servarr keeps it in its own data folder, readable by the app only, and never shows it again.</p>
+        <label for="mn-token">Bot token</label>
+        <input type="password" id="mn-token" placeholder="Paste your bot token" autocomplete="off" />
+        <details class="help">
+          <summary>Where do I get a bot token?</summary>
+          <div class="help-body">
+            <ol>
+              <li>Open the <strong>Discord Developer Portal</strong> (discord.com/developers/applications) → <strong>New Application</strong>, and name it, e.g. "Movie Night".</li>
+              <li><strong>Bot</strong> tab → <strong>Reset Token</strong> → copy it (you won't see it again).</li>
+              <li>Optional: under <strong>Privileged Gateway Intents</strong>, turn on <strong>Server Members Intent</strong>, so DJs get their private player link by DM at showtime. Nothing else is needed; in this mode the bot never reads messages.</li>
+            </ol>
+          </div>
+        </details>
+        <div class="result" id="result-mn-token"></div>
+        <div class="actions">
+          <span></span>
+          <button class="btn btn-gold" id="btn-mn-token">Save &amp; Continue</button>
+        </div>
+      </section>
+
+      <!-- Movie Night only: invite -->
+      <section class="step" data-step="mn-invite">
+        <h2>Invite the bot to your server</h2>
+        <p class="sub">Open the link, pick your server, and click Authorize. You need <strong>Manage Server</strong> there; otherwise send the link to someone who has it.</p>
+        <p><a class="btn btn-gold" id="mn-invite-link" href="#" target="_blank" rel="noopener" style="display:none;">Open the invite link</a></p>
+        <div class="field-hint">It asks only for what Movie Night uses: <strong id="mn-invite-perms">View Channels, Send Messages, Embed Links, Read Message History</strong>, plus slash commands. No admin, moderation or message-reading access.</div>
+        <div class="result" id="result-mn-invite"></div>
+        <div class="actions">
+          <button class="btn btn-ghost" data-back="mn-token">Back</button>
+          <button class="btn btn-gold" id="btn-mn-invite">I've invited it</button>
+        </div>
+      </section>
+
+      <!-- Movie Night only: server and channel -->
+      <section class="step" data-step="mn-server">
+        <h2>Pick your server and Movie Night channel</h2>
+        <p class="sub">The channel is where the vote, the "Now playing" post and the Watch Live button go.</p>
+        <label for="mn-guild">Server</label>
+        <div style="display:flex; gap:0.5rem;">
+          <select id="mn-guild" style="flex:1;"><option value="">— loading —</option></select>
+          <button type="button" class="btn btn-ghost" id="btn-mn-guilds">Refresh</button>
+        </div>
+        <div class="field-hint">Only servers the bot has been invited to are listed.</div>
+        <label for="mn-channel">Movie Night channel</label>
+        <select id="mn-channel" data-kind="channel"></select>
+        <label for="mn-djrole">DJ role <span class="optional-badge">optional</span></label>
+        <select id="mn-djrole"></select>
+        <div class="field-hint">People with this role can start and control movies. People with Manage Server always can.</div>
+        <label for="mn-control">DJ control channel <span class="optional-badge">optional</span></label>
+        <select id="mn-control"></select>
+        <div class="field-hint">A private channel for DJs: Servarr keeps a control panel and the player's admin link there, and only if the channel is hidden from @everyone.</div>
+        <label class="check" for="mn-daily"><input type="checkbox" id="mn-daily" checked /> Post a vote every day and start the winner automatically</label>
+        <div class="field-hint" id="mn-daily-hint"></div>
+        <details class="help">
+          <summary>Change the vote times</summary>
+          <div class="help-body">
+            <label for="mn-vote-hr">Vote opens (UTC hour, 0-23)</label>
+            <input type="number" id="mn-vote-hr" min="0" max="23" />
+            <label for="mn-play-hr">Winner starts playing (UTC hour, 0-23)</label>
+            <input type="number" id="mn-play-hr" min="0" max="23" />
+            <label for="mn-count">Movies offered in the vote</label>
+            <input type="number" id="mn-count" min="2" max="25" />
+          </div>
+        </details>
+        <div class="result" id="result-mn-server"></div>
+        <div class="actions">
+          <button class="btn btn-ghost" data-back="mn-invite">Back</button>
+          <button class="btn btn-gold" id="btn-mn-server">Save &amp; Continue</button>
+        </div>
+      </section>
+
+      <!-- Movie Night only: pair the player -->
+      <section class="step" data-step="mn-player">
+        <h2>Pair the Movie Night player</h2>
+        <p class="sub">The player is what plays the movie for everyone. Servarr tells it what to play.</p>
+        <div class="result ok" id="mn-player-auto" style="display:none;"></div>
+        <div id="mn-player-manual">
+          <label for="mn-pair-code">Pair code</label>
+          <div style="display:flex; gap:0.5rem;">
+            <input type="text" id="mn-pair-code" placeholder="MNP1-… from the player's setup page" autocomplete="off" style="flex:1;" />
+            <button type="button" class="btn btn-ghost" id="btn-mn-pair">Pair</button>
+          </div>
+          <div class="field-hint">Open the player's setup page, copy the pair code it shows, and paste it here.</div>
+        </div>
+        <div class="field-hint" id="mn-player-hint" style="display:none;"></div>
+        <details class="help">
+          <summary>Web remote for DJs (optional)</summary>
+          <div class="help-body">
+            DJs can also get a phone-friendly remote page served by Servarr. Enter the address they use to reach this Servarr, or leave it as it is.
+            <label for="mn-public-url">This Servarr's address, as DJs reach it</label>
+            <input type="url" id="mn-public-url" placeholder="http://192.168.1.50:8888" />
+          </div>
+        </details>
+        <div class="result" id="result-mn-player"></div>
+        <div class="actions">
+          <button class="btn btn-ghost" data-back="mn-server">Back</button>
+          <button class="btn btn-gold" id="btn-mn-player">Continue</button>
+        </div>
+      </section>
+
+      <!-- Movie Night only: done -->
+      <section class="step" data-step="mn-done">
+        <h2>Movie Night is ready</h2>
+        <p class="sub">In Discord, type <code>/play-movie</code> and a title. Everyone else clicks <strong>WATCH LIVE</strong> on the "Now playing" post. Come back to <code>/setup</code> any time to change something.</p>
+        <div id="mn-summary"></div>
+        <div class="field-hint" id="mn-bot-status"></div>
+        <div class="actions">
+          <span></span>
+          <button class="btn btn-gold" id="btn-mn-finish">Done</button>
+        </div>
+      </section>
+
+      </div>
+      <!-- /only:movienight -->
+
     </div>
   </div>
 </div>
 
 <script>
-  const STEP_LABELS = ["Login", "Discord", "Radarr/Sonarr", "Plex/Tautulli", "Movie Night", "Advanced", "Done"];
-  let currentStep = 1;
+  // Two wizards share this page. "full" (Everything) is the original
+  // seven-step one; "movienight" (Movie Night only) is a short one. The
+  // server leaves the other mode's sections out of the page once a mode is
+  // picked, so every lookup below has to cope with elements not existing.
+  const STEPS = {
+    full: [["mode", "Mode"], ["1", "Login"], ["2", "Discord"], ["3", "Radarr/Sonarr"], ["4", "Plex/Tautulli"], ["5", "Movie Night"], ["6", "Advanced"], ["7", "Done"]],
+    movienight: [["mode", "Mode"], ["1", "Login"], ["mn-token", "Bot token"], ["mn-invite", "Invite"], ["mn-server", "Server & channel"], ["mn-player", "Player"], ["mn-done", "Done"]],
+  };
+  const MODE_LABELS = { full: "Everything", movienight: "Movie Night only" };
+  let MODE = "full";
+  let MODE_LOCKED = false;
+  let MODE_CHOSEN = false;
+  let currentStep = "mode";
   let authToken = null;
   let editMode = false;
   const state = { discord: false, radarr: false, sonarr: false, plex: false, tautulli: false, reclaimarr: false, player: false };
   let savedSettings = {};
 
   function $(sel) { return document.querySelector(sel); }
+  function on(sel, event, handler) { const el = $(sel); if (el) el.addEventListener(event, handler); }
+  function firstStep() { return MODE === "movienight" ? "mn-token" : "2"; }
 
   function renderStepper() {
     const el = $("#stepper");
+    // On a fresh install the list of steps depends on the choice being made.
+    if (currentStep === "mode" && !MODE_CHOSEN && !editMode) { el.style.display = "none"; return; }
     el.style.display = "flex";
     el.innerHTML = "";
-    STEP_LABELS.forEach((label, i) => {
-      const n = i + 1;
-      if (editMode && n === 1) return; // no admin-creation step once already set up
+    const list = STEPS[MODE].filter(([id]) => !(editMode && id === "1")); // no admin-creation step once already set up
+    const current = list.findIndex(([id]) => id === currentStep);
+    list.forEach(([id, label], i) => {
       const dot = document.createElement("span");
-      dot.className = "step-dot" + (n === currentStep ? " active" : n < currentStep ? " done" : "") + (editMode ? " clickable" : "");
-      dot.textContent = (n < currentStep ? "✓ " : n + ". ") + label;
-      if (editMode) dot.addEventListener("click", () => goToStep(n));
+      dot.className = "step-dot" + (i === current ? " active" : i < current ? " done" : "") + (editMode ? " clickable" : "");
+      dot.textContent = (i < current ? "✓ " : (i + 1) + ". ") + label;
+      if (editMode) dot.addEventListener("click", () => goToStep(id));
       el.appendChild(dot);
     });
   }
 
   function goToStep(n) {
-    currentStep = n;
-    if (n === 6) loadLayout();
-    document.querySelectorAll(".step").forEach((s) => s.classList.toggle("active", Number(s.dataset.step) === n));
+    currentStep = String(n);
+    if (currentStep === "mode") renderModeStep();
+    if (currentStep === "6") loadLayout();
+    if (currentStep === "mn-invite") loadMnInvite();
+    if (currentStep === "mn-server") loadMnServer();
+    if (currentStep === "mn-player") loadMnPlayer();
+    if (currentStep === "mn-done") buildMnSummary();
+    document.querySelectorAll(".step").forEach((s) => s.classList.toggle("active", s.dataset.step === currentStep));
     renderStepper();
   }
 
   document.querySelectorAll("[data-back]").forEach((btn) => {
-    btn.addEventListener("click", () => goToStep(Number(btn.dataset.back)));
+    btn.addEventListener("click", () => goToStep(btn.dataset.back));
   });
 
   async function api(path, { method = "GET", body, auth = true } = {}) {
@@ -426,8 +614,14 @@
 
   function showResult(id, ok, message) {
     const el = $("#result-" + id);
+    if (!el) return;
     el.className = "result " + (ok ? "ok" : "err");
     el.textContent = message;
+  }
+
+  function clearResult(id) {
+    const el = $("#result-" + id);
+    if (el) { el.className = "result"; el.textContent = ""; }
   }
 
   function setBusy(btn, busy) {
@@ -444,8 +638,45 @@
     return input.value !== (input.dataset.original || "");
   }
 
+  // ---- Mode: Everything or Movie Night only ----
+  function pruneOtherMode() {
+    document.querySelectorAll("[data-only]").forEach((el) => { if (el.dataset.only !== MODE) el.remove(); });
+  }
+
+  function renderModeStep() {
+    document.querySelectorAll("[data-mode-choice]").forEach((btn) => {
+      btn.classList.toggle("selected", (MODE_CHOSEN || editMode) && btn.dataset.modeChoice === MODE);
+      btn.disabled = MODE_LOCKED;
+    });
+    $("#mode-locked-note").style.display = MODE_LOCKED ? "block" : "none";
+    $("#btn-mode-next").style.display = (MODE_LOCKED || MODE_CHOSEN || editMode) ? "inline-block" : "none";
+  }
+
+  async function chooseMode(choice) {
+    if (MODE_LOCKED) return;
+    if (!authToken) {
+      // First run: remembered here, saved together with the login on the next step.
+      MODE = choice;
+      MODE_CHOSEN = true;
+      goToStep("1");
+      return;
+    }
+    if (choice === MODE && MODE_CHOSEN) { goToStep(firstStep()); return; }
+    try {
+      await api("/api/setup/mode", { method: "POST", body: { mode: choice } });
+      showResult("mode", true, `Switched to ${MODE_LABELS[choice]}. Reloading…`);
+      setTimeout(() => { window.location.href = "/setup"; }, 900);
+    } catch (e) {
+      showResult("mode", false, e.message);
+    }
+  }
+  document.querySelectorAll("[data-mode-choice]").forEach((btn) => {
+    btn.addEventListener("click", () => chooseMode(btn.dataset.modeChoice));
+  });
+  on("#btn-mode-next", "click", () => goToStep(authToken ? firstStep() : "1"));
+
   // ---- Step 1: admin login (create) ----
-  $("#btn-1-next").addEventListener("click", async () => {
+  on("#btn-1-next", "click", async () => {
     const btn = $("#btn-1-next");
     const username = $("#admin-username").value.trim();
     const password = $("#admin-password").value;
@@ -454,10 +685,17 @@
     if (password !== confirm) { showResult(1, false, "Passwords don't match."); return; }
     setBusy(btn, true);
     try {
-      await api("/api/setup/admin", { method: "POST", auth: false, body: { username, password } });
+      const body = { username, password };
+      if (!MODE_LOCKED) body.mode = MODE;
+      const res = await api("/api/setup/admin", { method: "POST", auth: false, body });
       authToken = btoa(username + ":" + password);
+      if (res && res.mode) { MODE = res.mode; MODE_LOCKED = !!res.mode_locked; }
+      MODE_CHOSEN = true;
+      pruneOtherMode();
+      const back = $('.step[data-step="1"] [data-back]');
+      if (back) back.remove(); // the login exists now; the mode is changed from the Mode step after this
       showResult(1, true, "Login created.");
-      goToStep(2);
+      goToStep(firstStep());
     } catch (e) {
       showResult(1, false, e.message);
     } finally {
@@ -476,7 +714,7 @@
     let found = false;
     items.forEach((it) => {
       const o = document.createElement("option");
-      o.value = it[valueKey]; o.textContent = (valueKey === "name" || sel.id === "mod-log-channel") ? "#" + it.name : it.name;
+      o.value = it[valueKey]; o.textContent = (valueKey === "name" || sel.id === "mod-log-channel" || sel.dataset.kind === "channel") ? "#" + it.name : it.name;
       if (sel.id === "mn-dj-role" || sel.id === "discord-guild") o.textContent = it.name;
       if (values.includes(o.value)) { o.selected = true; found = true; }
       sel.appendChild(o);
@@ -507,13 +745,26 @@
       setBusy(btn, false);
     }
   }
-  $("#btn-load-guilds").addEventListener("click", loadGuilds);
+  on("#btn-load-guilds", "click", loadGuilds);
+
+  // First run: show the current values (the defaults) in the number fields
+  // instead of leaving them empty, which would save zeros.
+  let tuningFilled = false;
+  function fillTuning(data) {
+    [["#mn-vote-hour", "movie_night_vote_hour_utc"], ["#mn-play-hour", "movie_night_hour_utc"], ["#mn-candidates", "movie_night_candidate_count"],
+      ["#mn-pause", "movie_night_pause_upgrade_minutes"], ["#xp-min", "xp_min_per_message"], ["#xp-max", "xp_max_per_message"], ["#xp-cooldown", "xp_cooldown_seconds"]]
+      .forEach(([sel, key]) => { const el = $(sel); if (el && el.value === "" && data[key] !== undefined) el.value = data[key]; });
+    if (!tuningFilled) $("#mn-daily-full").checked = data.movie_night_daily_vote !== false;
+    tuningFilled = true;
+  }
 
   async function loadLayout() {
     try {
       if (!Object.keys(savedSettings).length) savedSettings = await api("/api/settings");
+      fillTuning(savedSettings);
       const res = await api("/api/setup/discord-layout");
       const names = res.channels.map((c) => ({ id: c.id, name: c.name }));
+      fillSelect($("#mn-vote-channel"), names, savedSettings.movie_night_channel_id || "", "#general (default)", "id");
       fillSelect($("#mn-dj-role"), res.roles, savedSettings.movie_night_dj_role_id || "", "None (Manage Server only)", "id");
       fillSelect($("#mod-log-channel"), names, savedSettings.mod_log_channel_id || "", "None (don't log)", "id");
       fillSelect($("#mn-control-channel"), names, savedSettings.movie_night_control_channel || "", "None", "name");
@@ -528,7 +779,7 @@
   }
 
   // ---- Step 2: Discord ----
-  $("#btn-2-next").addEventListener("click", async () => {
+  on("#btn-2-next", "click", async () => {
     const btn = $("#btn-2-next");
     const token = $("#discord-token").value.trim();
     const guild = $("#discord-guild").value.trim();
@@ -558,7 +809,7 @@
   });
 
   // ---- Step 3: Radarr + Sonarr ----
-  $("#btn-3-next").addEventListener("click", async () => {
+  on("#btn-3-next", "click", async () => {
     const btn = $("#btn-3-next");
     setBusy(btn, true);
     let update = {};
@@ -607,7 +858,7 @@
   });
 
   // ---- Step 4: Plex + Tautulli ----
-  $("#btn-4-next").addEventListener("click", async () => {
+  on("#btn-4-next", "click", async () => {
     const btn = $("#btn-4-next");
     setBusy(btn, true);
     let update = {};
@@ -656,6 +907,14 @@
   });
 
   // ---- Movie Night player pairing ----
+  function editionNote(res) {
+    // Player 1.1+ says which edition it is. The Guest edition goes with Movie Night only mode.
+    if (res.edition === "guest" && MODE === "full" && !MODE_LOCKED) {
+      return " This is the Guest edition of the player: if Movie Night is all you use, switch Servarr to Movie Night only (Mode, at the top).";
+    }
+    return "";
+  }
+
   async function pairPlayer() {
     const url = $("#player-url").value.trim().replace(/\/$/, "");
     const key = $("#player-key").value.trim();
@@ -667,17 +926,17 @@
     markOriginal($("#player-key"));
     state.player = true;
     const kind = res.mode === "movienight" ? "" : " (Plex Companion player — set the watch page below)";
-    showResult("player", true, `Paired with ${res.name}${kind}.` + (res.ready === false ? " It isn't signed in to Plex yet — finish that on the player's setup page." : ""));
+    showResult("player", true, `Paired with ${res.name}${kind}.` + (res.ready === false ? " It isn't signed in to Plex yet — finish that on the player's setup page." : "") + editionNote(res));
     return res;
   }
-  $("#btn-pair-player").addEventListener("click", async () => {
+  on("#btn-pair-player", "click", async () => {
     const btn = $("#btn-pair-player");
     setBusy(btn, true);
     try { await pairPlayer(); } catch (e) { showResult("player", false, e.message); } finally { setBusy(btn, false); }
   });
 
   // ---- Step 5: Reclaimarr (Movie Night) ----
-  $("#btn-5-next").addEventListener("click", async () => {
+  on("#btn-5-next", "click", async () => {
     const btn = $("#btn-5-next");
     setBusy(btn, true);
     let update = {};
@@ -726,11 +985,13 @@
   });
 
   // ---- Step 6: advanced settings ----
-  $("#btn-6-next").addEventListener("click", async () => {
+  on("#btn-6-next", "click", async () => {
     const btn = $("#btn-6-next");
     setBusy(btn, true);
     try {
       const update = {
+        movie_night_channel_id: $("#mn-vote-channel").value,
+        movie_night_daily_vote: $("#mn-daily-full").checked,
         movie_night_vote_hour_utc: Number($("#mn-vote-hour").value),
         movie_night_hour_utc: Number($("#mn-play-hour").value),
         movie_night_candidate_count: Number($("#mn-candidates").value),
@@ -778,10 +1039,276 @@
       .join("");
   }
 
-  $("#btn-finish").addEventListener("click", () => { window.location.href = "/setup"; });
+  on("#btn-finish", "click", () => { window.location.href = "/setup"; });
+
+  // =====================================================================
+  // Movie Night only: token -> invite -> server & channel -> player -> done
+  // =====================================================================
+
+  // ---- Bot token ----
+  function showInvite(info) {
+    const link = $("#mn-invite-link");
+    if (!link || !info || !info.invite_url) return;
+    link.href = info.invite_url;
+    link.style.display = "inline-block";
+    if (info.permissions && info.permissions.length) $("#mn-invite-perms").textContent = info.permissions.join(", ");
+    if (info.username) state.botName = info.username;
+  }
+
+  on("#btn-mn-token", "click", async () => {
+    const btn = $("#btn-mn-token");
+    const token = $("#mn-token").value.trim();
+    if (!token && !state.discord) { showResult("mn-token", false, "Paste the bot token first."); return; }
+    if (!token) { goToStep("mn-invite"); return; }
+    setBusy(btn, true);
+    try {
+      const res = await api("/api/setup/discord-token", { method: "POST", body: { token } });
+      $("#mn-token").value = "";
+      $("#mn-token").placeholder = "Saved. Paste a new token here to replace it.";
+      state.discord = true;
+      showInvite(res);
+      showResult("mn-token", true, `Connected as ${res.username}. The token is saved and the bot is starting.`);
+      setTimeout(() => goToStep("mn-invite"), 600);
+    } catch (e) {
+      showResult("mn-token", false, e.message);
+    } finally {
+      setBusy(btn, false);
+    }
+  });
+
+  // ---- Invite ----
+  async function loadMnInvite() {
+    try {
+      showInvite(await api("/api/setup/invite"));
+      clearResult("mn-invite");
+    } catch (e) {
+      showResult("mn-invite", false, e.message);
+    }
+  }
+  on("#btn-mn-invite", "click", () => goToStep("mn-server"));
+
+  // ---- Server & channel ----
+  let mnPermsWarnedFor = "";
+  let mnScheduleFilled = false;
+
+  function localHour(hour) {
+    const d = new Date();
+    d.setUTCHours(hour, 0, 0, 0);
+    return d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  }
+
+  function renderMnSchedule() {
+    const utc = (h) => String(h).padStart(2, "0") + ":00 UTC";
+    const vote = Number($("#mn-vote-hr").value);
+    const play = Number($("#mn-play-hr").value);
+    $("#mn-daily-hint").textContent = $("#mn-daily").checked
+      ? `The vote opens at ${utc(vote)} (${localHour(vote)} your time) and the winner starts at ${utc(play)} (${localHour(play)} your time).`
+      : "No automatic vote. Movie Night runs when a DJ starts a movie with /play-movie, or a mod posts a vote with /movie-night.";
+  }
+
+  function fillMnSchedule(data) {
+    if (mnScheduleFilled) return;
+    mnScheduleFilled = true;
+    $("#mn-daily").checked = data.movie_night_daily_vote !== false;
+    $("#mn-vote-hr").value = data.movie_night_vote_hour_utc;
+    $("#mn-play-hr").value = data.movie_night_hour_utc;
+    $("#mn-count").value = data.movie_night_candidate_count;
+    renderMnSchedule();
+  }
+  ["#mn-daily", "#mn-vote-hr", "#mn-play-hr"].forEach((sel) => on(sel, "input", renderMnSchedule));
+
+  async function loadMnChannels() {
+    const guild = $("#mn-guild").value;
+    if (!guild) {
+      fillSelect($("#mn-channel"), [], "", "— pick your server first —", "id");
+      fillSelect($("#mn-djrole"), [], "", "None (Manage Server only)", "id");
+      fillSelect($("#mn-control"), [], "", "None", "name");
+      return;
+    }
+    const res = await api("/api/setup/discord-layout?guild_id=" + encodeURIComponent(guild));
+    const has = (list, key, value) => (value && list.some((it) => it[key] === value) ? value : "");
+    fillSelect($("#mn-channel"), res.channels, has(res.channels, "id", savedSettings.movie_night_channel_id), "— pick a channel —", "id");
+    fillSelect($("#mn-djrole"), res.roles, has(res.roles, "id", savedSettings.movie_night_dj_role_id), "None (Manage Server only)", "id");
+    fillSelect($("#mn-control"), res.channels, has(res.channels, "name", savedSettings.movie_night_control_channel), "None", "name");
+  }
+
+  async function loadMnServer() {
+    try {
+      if (!Object.keys(savedSettings).length) savedSettings = await api("/api/settings");
+      fillMnSchedule(savedSettings);
+      const res = await api("/api/setup/discord-guilds", { method: "POST", body: {} });
+      const sel = $("#mn-guild");
+      const current = sel.value || sel.dataset.original || "";
+      fillSelect(sel, res.guilds, res.guilds.some((g) => g.id === current) ? current : "", res.guilds.length ? "— pick your server —" : "— the bot isn't in any server yet —", "id");
+      if (!sel.value && res.guilds.length === 1) sel.value = res.guilds[0].id;
+      showInvite(res);
+      await loadMnChannels();
+      if (res.guilds.length) clearResult("mn-server");
+      else showResult("mn-server", false, "The bot isn't in any server yet. Go back a step, open the invite link, then click Refresh.");
+    } catch (e) {
+      showResult("mn-server", false, e.message);
+    }
+  }
+  on("#btn-mn-guilds", "click", async () => {
+    const btn = $("#btn-mn-guilds");
+    setBusy(btn, true);
+    try { await loadMnServer(); } finally { setBusy(btn, false); }
+  });
+  on("#mn-guild", "change", async () => {
+    try { await loadMnChannels(); clearResult("mn-server"); } catch (e) { showResult("mn-server", false, e.message); }
+  });
+
+  on("#btn-mn-server", "click", async () => {
+    const btn = $("#btn-mn-server");
+    const guildSel = $("#mn-guild");
+    const guild = guildSel.value;
+    const channel = $("#mn-channel").value;
+    if (!guild) { showResult("mn-server", false, "Pick your server. Not in the list? Go back a step and invite the bot, then click Refresh."); return; }
+    if (!channel) { showResult("mn-server", false, "Pick the Movie Night channel."); return; }
+    const schedule = { movie_night_daily_vote: $("#mn-daily").checked };
+    for (const [sel, key, low, high] of [["#mn-vote-hr", "movie_night_vote_hour_utc", 0, 23], ["#mn-play-hr", "movie_night_hour_utc", 0, 23], ["#mn-count", "movie_night_candidate_count", 2, 25]]) {
+      const raw = $(sel).value.trim();
+      if (raw === "") continue; // untouched and never loaded: keep what's saved
+      const n = Number(raw);
+      if (!Number.isInteger(n) || n < low || n > high) {
+        showResult("mn-server", false, `${$(`label[for="${sel.slice(1)}"]`).textContent} needs a whole number from ${low} to ${high}.`);
+        return;
+      }
+      schedule[key] = n;
+    }
+    setBusy(btn, true);
+    try {
+      const body = { guild_id: guild, channel_id: channel, dj_role_id: $("#mn-djrole").value, control_channel: $("#mn-control").value };
+      const res = await api("/api/setup/movienight-server", { method: "POST", body });
+      savedSettings = Object.assign({}, savedSettings, await api("/api/settings", { method: "POST", body: schedule }), {
+        movie_night_channel_id: channel, movie_night_dj_role_id: body.dj_role_id, movie_night_control_channel: body.control_channel,
+      });
+      guildSel.dataset.original = guild;
+      state.server = guildSel.options[guildSel.selectedIndex].textContent;
+      state.channel = res.channel;
+      const missing = res.missing_permissions || [];
+      if (missing.length && mnPermsWarnedFor !== channel) {
+        mnPermsWarnedFor = channel;
+        showResult("mn-server", false, `Saved, but the bot can't post in #${res.channel} yet: it is missing ${missing.join(", ")} there. Allow those for the bot in that channel's permissions, then click Save & Continue again (or click it again to carry on anyway).`);
+        return;
+      }
+      showResult("mn-server", true, `Saved. Movie Night posts go to #${res.channel}.`);
+      setTimeout(() => goToStep("mn-player"), 500);
+    } catch (e) {
+      showResult("mn-server", false, e.message);
+    } finally {
+      setBusy(btn, false);
+    }
+  });
+
+  // ---- Player ----
+  function renderMnPlayer(p) {
+    const auto = $("#mn-player-auto");
+    const manual = $("#mn-player-manual");
+    const name = p.name || "the Movie Night player";
+    state.player = !!p.paired;
+    state.playerAuto = !!(p.paired && p.auto);
+    clearResult("mn-player");
+    if (state.playerAuto) {
+      auto.textContent = `✓ Paired automatically with ${name}. Nothing to paste: the player shares its pairing with Servarr.`;
+      auto.style.display = "block";
+      manual.style.display = "none";
+    } else {
+      auto.style.display = "none";
+      manual.style.display = "block";
+      if (p.paired) showResult("mn-player", true, `Paired with ${name} at ${p.url}. Paste another pair code to change it.`);
+    }
+    const hint = $("#mn-player-hint");
+    hint.style.display = "none";
+    if (p.error) {
+      showResult("mn-player", false, p.paired ? `Paired, but the player didn't answer just now: ${p.error}` : p.error);
+    } else if (p.paired && p.ready === false) {
+      hint.textContent = "One thing left on the player: open its setup page and click \"Sign in with Plex\". Until then it has no library to play from.";
+      hint.style.display = "block";
+    }
+  }
+
+  async function loadMnPlayer() {
+    try {
+      renderMnPlayer(await api("/api/setup/player"));
+    } catch (e) {
+      showResult("mn-player", false, e.message);
+    }
+  }
+
+  async function pairMnPlayer() {
+    const code = $("#mn-pair-code").value.trim();
+    if (!code) throw new Error("Paste the pair code from the player's setup page first.");
+    await api("/api/setup/pair-player", { method: "POST", body: { url: code, key: "" } });
+    $("#mn-pair-code").value = "";
+    await loadMnPlayer();
+  }
+  on("#btn-mn-pair", "click", async () => {
+    const btn = $("#btn-mn-pair");
+    setBusy(btn, true);
+    try { await pairMnPlayer(); } catch (e) { showResult("mn-player", false, e.message); } finally { setBusy(btn, false); }
+  });
+
+  function isLoopback(url) {
+    try { return ["localhost", "127.0.0.1", "[::1]"].includes(new URL(url).hostname); } catch (e) { return true; }
+  }
+
+  on("#btn-mn-player", "click", async () => {
+    const btn = $("#btn-mn-player");
+    setBusy(btn, true);
+    try {
+      if ($("#mn-pair-code").value.trim()) await pairMnPlayer();
+      // The address DJs use to reach Servarr (for the optional web remote link).
+      const typed = $("#mn-public-url").value.trim().replace(/\/$/, "");
+      const original = $("#mn-public-url").dataset.original || "";
+      let publicUrl = typed !== original ? typed : "";
+      if (!typed && isLoopback(original || "http://localhost") && !isLoopback(window.location.origin)) publicUrl = window.location.origin;
+      if (publicUrl) {
+        await api("/api/connections", { method: "POST", body: { servarr_public_url: publicUrl } });
+        $("#mn-public-url").value = publicUrl;
+        markOriginal($("#mn-public-url"));
+      }
+      goToStep("mn-done");
+    } catch (e) {
+      showResult("mn-player", false, e.message);
+    } finally {
+      setBusy(btn, false);
+    }
+  });
+
+  // ---- Done ----
+  function summaryRow(label, ok, detail) {
+    const row = document.createElement("div");
+    row.className = "summary-row";
+    const left = document.createElement("span");
+    left.textContent = label;
+    const right = document.createElement("span");
+    right.className = ok ? "ok-tag" : "skip-tag";
+    right.textContent = ok ? "✓ " + (detail || "done") : (detail || "not yet");
+    row.appendChild(left);
+    row.appendChild(right);
+    return row;
+  }
+
+  async function buildMnSummary() {
+    const box = $("#mn-summary");
+    box.innerHTML = "";
+    box.appendChild(summaryRow("Discord bot", state.discord, state.botName ? "connected as " + state.botName : "token saved"));
+    box.appendChild(summaryRow("Server and channel", !!state.channel || !!savedSettings.movie_night_channel_id, state.channel ? `${state.server || "server"} · #${state.channel}` : "picked"));
+    box.appendChild(summaryRow("Movie Night player", state.player, state.playerAuto ? "paired automatically" : "paired"));
+    const online = $("#mn-bot-status");
+    online.textContent = "";
+    try {
+      const bot = await api("/api/setup/bot");
+      online.textContent = bot.connected
+        ? `The bot is online as ${bot.user}.`
+        : "The bot is still connecting. Give it a few seconds; if it stays offline in Discord, look at Servarr's log (docker logs servarr).";
+    } catch (e) { /* the summary above is enough */ }
+  }
+  on("#btn-mn-finish", "click", () => { window.location.href = "/setup"; });
 
   // ---- Edit-mode login ----
-  $("#btn-login").addEventListener("click", async () => {
+  on("#btn-login", "click", async () => {
     const btn = $("#btn-login");
     const username = $("#login-username").value.trim();
     const password = $("#login-password").value;
@@ -795,11 +1322,15 @@
       $("#login-gate").style.display = "none";
       editMode = true;
       $("#tagline").textContent = "Editing settings — jump to any section below.";
-      prefill(connections, settingsData);
-      if (connections.discord_bot_token.is_set) loadGuilds();
       $("#steps-container").style.display = "block";
       document.querySelector('.step[data-step="1"]').remove(); // no re-creating the admin login in edit mode
-      goToStep(2);
+      if (MODE === "movienight") {
+        prefillMn(connections, settingsData);
+      } else {
+        prefill(connections, settingsData);
+        if (connections.discord_bot_token.is_set) loadGuilds();
+      }
+      goToStep(firstStep());
     } catch (e) {
       authToken = null;
       showResult("login", false, "Invalid credentials.");
@@ -841,6 +1372,8 @@
     prefillField($("#servarr-public-url"), connections.servarr_public_url.value);
     savedSettings = settingsData;
 
+    $("#mn-daily-full").checked = settingsData.movie_night_daily_vote !== false;
+    tuningFilled = true;
     $("#mn-vote-hour").value = settingsData.movie_night_vote_hour_utc;
     $("#mn-play-hour").value = settingsData.movie_night_hour_utc;
     $("#mn-candidates").value = settingsData.movie_night_candidate_count;
@@ -851,18 +1384,47 @@
     $("#xp-cooldown").value = settingsData.xp_cooldown_seconds;
   }
 
+  function prefillMn(connections, settingsData) {
+    savedSettings = settingsData;
+    if (connections.discord_bot_token.is_set) {
+      // Only the masked hint ever comes back; the token itself is never sent to the browser.
+      $("#mn-token").placeholder = connections.discord_bot_token.value + "  (saved — paste a new token to replace it)";
+      state.discord = true;
+    }
+    $("#mn-guild").dataset.original = connections.discord_guild_id.value || "";
+    prefillField($("#mn-public-url"), connections.servarr_public_url.value);
+    state.player = !!connections.neko_mpv_shim_url.value;
+  }
+
   // ---- Boot ----
   (async () => {
+    let status = {};
     try {
-      const status = await api("/api/setup/status", { auth: false });
-      if (status.setup_complete) {
-        $("#login-gate").style.display = "block";
-        return;
-      }
+      status = await api("/api/setup/status", { auth: false });
     } catch (e) { /* fall through to showing the first-run wizard anyway */ }
+    MODE = status.mode === "movienight" ? "movienight" : "full";
+    MODE_LOCKED = !!status.mode_locked;
+    MODE_CHOSEN = !!status.mode_chosen;
+    if (MODE_CHOSEN || status.admin_configured) pruneOtherMode();
+    if (status.setup_complete || status.admin_configured) {
+      if (!status.setup_complete) {
+        // The login exists but setup stopped before the bot token: pick up where it left off.
+        $("#login-title").textContent = "Log in to continue setup";
+        $("#login-sub").textContent = "Your login is already created. Log in to finish setting up.";
+      }
+      $("#login-gate").style.display = "block";
+      return;
+    }
     $("#steps-container").style.display = "block";
-    $("#servarr-public-url").value = window.location.origin;
-    goToStep(1);
+    if ($("#servarr-public-url")) $("#servarr-public-url").value = window.location.origin;
+    if (status.discord_configured) {
+      // A token is already set (DISCORD_TOKEN in the container's settings): no need to paste it again.
+      state.discord = true;
+      document.querySelectorAll("#discord-token, #mn-token").forEach((el) => {
+        el.placeholder = "A token is already set. Paste a new one only to replace it.";
+      });
+    }
+    goToStep("mode");
   })();
 </script>
 </body>

@@ -5,6 +5,7 @@ import os
 import secrets as secrets_mod
 
 from .config import settings
+from .connections_store import write_private_json
 
 _overrides_path = os.path.join(settings.data_dir, "auth_overrides.json")
 _ITERATIONS = 200_000
@@ -28,11 +29,7 @@ def is_admin_configured() -> bool:
 def set_admin(username: str, password: str) -> None:
     salt = secrets_mod.token_bytes(16)
     payload = {"username": username, "salt": salt.hex(), "hash": _hash_password(password, salt)}
-    os.makedirs(settings.data_dir, exist_ok=True)
-    tmp_path = _overrides_path + ".tmp"
-    with open(tmp_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2)
-    os.replace(tmp_path, _overrides_path)
+    write_private_json(_overrides_path, payload)
 
 
 def verify_admin(username: str, password: str) -> bool:

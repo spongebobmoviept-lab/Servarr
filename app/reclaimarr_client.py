@@ -6,6 +6,7 @@ gets interrupted by a surprise 4K swap. Uses Reclaimarr's own admin login
 
 import httpx
 
+from . import features
 from .config import settings
 from .logger import log
 
@@ -22,7 +23,7 @@ async def test_connection(url: str, auth_user: str, auth_pass: str) -> dict:
 
 
 async def pause_upgrade(movie_id: int, minutes: int) -> bool:
-    if not settings.reclaimarr_url:
+    if not settings.reclaimarr_url or features.is_movienight():
         return False
     try:
         async with httpx.AsyncClient(timeout=15) as client:

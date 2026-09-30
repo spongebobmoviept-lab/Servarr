@@ -16,6 +16,7 @@ Every function degrades to "nothing playing" / False when no player is
 configured, so callers never need to special-case it.
 """
 
+import asyncio
 import json
 import time
 from typing import Optional
@@ -24,7 +25,7 @@ from xml.etree import ElementTree as ET
 
 import httpx
 
-from . import plex
+from . import features, plex
 from .config import settings
 
 # Companion API poll calls need a stable X-Plex-Client-Identifier — the shim
@@ -49,13 +50,21 @@ class PlayerError(Exception):
 
 def is_configured() -> bool:
     """Movie Night's player is optional — every function below degrades to
-    "nothing playing"/False when no player URL is set."""
-    return bool(settings.neko_mpv_shim_url)
+    "nothing playing"/False when no player URL is set. In Movie Night only
+    mode a plain Companion player doesn't count: it needs Servarr's own Plex
+    connection, which that mode switches off."""
+    if not settings.neko_mpv_shim_url:
+        return False
+    return not features.is_movienight() or mode() == "movienight"
 
 
 def mode() -> str:
     m = (settings.player_mode or "").strip().lower()
-    return m if m in ("movienight", "companion") else "companion"
+    if m in ("movienight", "companion"):
+        return m
+    # Unset (e.g. PLAYER_URL + PLAYER_KEY from the environment): Movie Night
+    # only mode only knows the Movie Night player.
+    return "movienight" if features.is_movienight() else "companion"
 
 
 def _auth_headers(key: Optional[str] = None) -> dict:
@@ -143,6 +152,30 @@ async def _mn(method: str, path: str, payload: Optional[dict] = None, params: Op
     return resp.status_code, data if isinstance(data, dict) else {}
 
 
+async def api_get(path: str, params: Optional[dict] = None) -> dict:
+    """GET one of the movienight player's read-only v1 endpoints (library,
+    status). Raises PlayerError with the player's own message on failure."""
+    if not is_configured() or mode() != "movienight":
+        raise PlayerError("No Movie Night player is paired yet — pair one in /setup.")
+    status, data = await _mn("GET", path, params=params)
+    if status != 200 or not data.get("ok"):
+        raise PlayerError(data.get("error") or f"the player answered HTTP {status}")
+    return data
+
+
+async def api_get_bytes(path: str) -> tuple[bytes, str]:
+    """Like api_get, for the player's binary endpoints (posters)."""
+    if not is_configured() or mode() != "movienight":
+        raise PlayerError("No Movie Night player is paired yet — pair one in /setup.")
+    async with _client() as client:
+        resp = await client.get(MN_PREFIX + path)
+    if resp.status_code in (401, 403):
+        raise PlayerError("the player rejected Servarr's pairing key — pair it again in /setup")
+    if resp.status_code != 200:
+        raise PlayerError(f"the player answered HTTP {resp.status_code}")
+    return resp.content, resp.headers.get("content-type", "image/jpeg")
+
+
 async def refresh_links(force: bool = False) -> dict:
     global _links, _links_at
     if mode() != "movienight" or not is_configured():
@@ -216,6 +249,8 @@ async def _get_timeline() -> Optional[dict]:
         if status != 200:
             raise PlayerError(data.get("error") or f"player status failed (HTTP {status})")
         state = data.get("state")
+        if state == "buffering":  # the player's contract: treat it as playing
+            state = "playing"
         if state not in ("playing", "paused"):
             return None
         return {"time_ms": int(data.get("position_ms") or 0), "duration_ms": int(data.get("duration_ms") or 0), "state": state}
@@ -306,6 +341,7 @@ async def play_by_rating_key(rating_key: str, offset_ms: int = 0) -> bool:
             return False
         if status != 200:
             raise PlayerError(data.get("error") or f"play failed (HTTP {status})")
+        await refresh_links()
         return True
     machine_id = await plex.get_machine_id()
     return await _play_media(rating_key, machine_id, offset_ms)
@@ -397,7 +433,13 @@ async def test_connection(url: str, key: str) -> dict:
             except ValueError:
                 data = {}
             if isinstance(data, dict) and data.get("ok"):
-                return {"mode": "movienight", "name": data.get("name") or "Movie Night player", "ready": bool(data.get("ready"))}
+                return {
+                    "mode": "movienight",
+                    "name": data.get("name") or "Movie Night player",
+                    "ready": bool(data.get("ready")),
+                    # Player 1.1+: which Movie Night edition it is. None on older players.
+                    "edition": data.get("edition") if data.get("edition") in ("owner", "guest") else None,
+                }
         resp = await client.get(
             "/player/timeline/poll",
             params={"commandID": _next_command_id()},
@@ -405,4 +447,67 @@ async def test_connection(url: str, key: str) -> dict:
         )
         resp.raise_for_status()
     ET.fromstring(resp.text)  # must be the Companion XML, not some other web page
-    return {"mode": "companion", "name": "Plex Companion player", "ready": True}
+    return {"mode": "companion", "name": "Plex Companion player", "ready": True, "edition": None}
+
+
+# ---------------------------------------------------------------------------
+# viewers vs. the host's upload (movienight player 1.1+)
+# ---------------------------------------------------------------------------
+
+
+async def player_status() -> Optional[dict]:
+    """The movienight player's own /status, including the viewer fields
+    player 1.1 added (viewers, viewer_capacity, over_capacity). None for
+    other players, when unpaired, or when the player doesn't answer."""
+    if not is_configured() or mode() != "movienight":
+        return None
+    try:
+        status, data = await _mn("GET", "/status")
+    except Exception:  # noqa: BLE001 — cosmetic; callers carry on without it
+        return None
+    return data if status == 200 else None
+
+
+def _count(value) -> Optional[int]:
+    return value if isinstance(value, int) and not isinstance(value, bool) and value >= 0 else None
+
+
+def capacity_warning(status: Optional[dict]) -> str:
+    """The line added to a Movie Night "Now playing" message when more
+    people are watching than the host's upload can carry. Empty when the
+    player doesn't report it (players before 1.1) or everything's fine."""
+    if not isinstance(status, dict) or status.get("over_capacity") is not True:
+        return ""
+    viewers, capacity = _count(status.get("viewers")), _count(status.get("viewer_capacity"))
+    more = f"More viewers ({viewers})" if viewers is not None else "More viewers"
+    about = f" (about {capacity})" if capacity is not None else ""
+    return f"⚠️ {more} than the host's connection can comfortably carry{about}. Video may stutter."
+
+
+# ---------------------------------------------------------------------------
+# bundle pairing file
+# ---------------------------------------------------------------------------
+
+_PAIRING_CHECK_SECONDS = 30  # paired: watch for a rotated key or a new address
+_PAIRING_WAIT_SECONDS = 10  # not paired yet: the player may still be starting
+
+
+async def pairing_watch_loop() -> None:
+    """Keeps re-reading the bundle's pair.json, so it doesn't matter which
+    container starts first: the player may write the file after Servarr is
+    up, and rewrites it when its key or address changes. Nothing but a small
+    file read when nothing changed."""
+    from . import connections_store
+    from .logger import log
+
+    while True:
+        await asyncio.sleep(_PAIRING_CHECK_SECONDS if settings.neko_mpv_shim_url else _PAIRING_WAIT_SECONDS)
+        try:
+            if connections_store.auto_pair_from_file():
+                await refresh_links(force=True)
+                await log(f"servarr: paired with the Movie Night player at {settings.neko_mpv_shim_url} (from its pairing file)")
+                from . import bot  # imported here: bot.py imports this module
+
+                bot.request_panel_refresh()
+        except Exception:  # noqa: BLE001 — try again next round
+            pass

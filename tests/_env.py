@@ -8,9 +8,9 @@ os.environ.setdefault("NEKO_MPV_PUBLIC_URL", "https://watch.example.com")
 
 
 def load_main():
-    """app.main imports bot.py, which builds discord.py persistent views at
-    import time — those need a running event loop (uvicorn provides one in
-    production). Import it inside a throwaway loop for the tests."""
+    """Imports app.main the way production does: with an event loop running
+    (uvicorn provides one), in case a module creates asyncio objects at
+    import time."""
     import asyncio
     import importlib
 
@@ -18,4 +18,7 @@ def load_main():
         return importlib.import_module("app.main")
 
     loop = asyncio.new_event_loop()
-    return loop.run_until_complete(_imp())
+    try:
+        return loop.run_until_complete(_imp())
+    finally:
+        loop.close()

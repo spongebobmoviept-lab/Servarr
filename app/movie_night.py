@@ -17,7 +17,7 @@ from typing import Optional
 
 import discord
 
-from . import mpv_control, radarr, reclaimarr_client
+from . import features, mpv_control, player_library, radarr, reclaimarr_client
 from .config import settings
 from .logger import log
 
@@ -25,6 +25,12 @@ GOLD = 0xD4AF37
 
 _client: Optional[discord.Client] = None
 _current_vote: dict = {}
+
+# Now-playing messages whose "too many viewers" line status_loop keeps
+# current while the movie plays: {"public"|"admin": [message, embed without
+# the line, the line currently shown]}.
+_live: dict[str, list] = {}
+_STATUS_POLL_SECONDS = 60
 
 
 def _vote_state_path() -> Path:
@@ -79,7 +85,87 @@ def set_client(client: discord.Client) -> None:
 
 
 def _vote_channel(guild: discord.Guild) -> Optional[discord.TextChannel]:
+    """The Movie Night channel picked in the setup page, or #general when
+    none is picked. With a channel picked, other servers get nothing."""
+    configured = (settings.movie_night_channel_id or "").strip()
+    if configured.isdigit():
+        channel = guild.get_channel(int(configured))
+        return channel if isinstance(channel, discord.TextChannel) else None
     return discord.utils.get(guild.text_channels, name="general")
+
+
+def _no_channel_reason() -> str:
+    if (settings.movie_night_channel_id or "").strip():
+        return "the Movie Night channel picked in the setup page isn't in this server"
+    return "no #general channel found"
+
+
+def vote_channel_label(guild: discord.Guild) -> str:
+    channel = _vote_channel(guild)
+    return f"#{channel.name}" if channel else "the Movie Night channel"
+
+
+def _everyone() -> Optional[str]:
+    """Movie Night only mode never pings @everyone (its invite doesn't ask
+    for Mention Everyone, and it's usually someone else's server)."""
+    return None if features.is_movienight() else "@everyone"
+
+
+# ---------------------------------------------------------------------------
+# "too many viewers" line (Movie Night player 1.1+)
+# ---------------------------------------------------------------------------
+
+
+def _with_warning(embed: discord.Embed, warning: str) -> discord.Embed:
+    if not warning:
+        return embed
+    shown = embed.copy()
+    shown.description = f"{embed.description}\n{warning}" if embed.description else warning
+    return shown
+
+
+async def _current_warning() -> str:
+    return mpv_control.capacity_warning(await mpv_control.player_status())
+
+
+def _track(kind: str, message: Optional[discord.Message], embed: discord.Embed, warning: str) -> None:
+    if message is not None and mpv_control.mode() == "movienight":
+        _live[kind] = [message, embed, warning]
+
+
+async def refresh_live_messages() -> None:
+    """Adds, updates or removes the warning line on the tracked now-playing
+    messages (only edits when the line changes). Stops tracking once
+    nothing is playing any more."""
+    status = await mpv_control.player_status()
+    if status is None:
+        return  # the player didn't answer; try again next round
+    if status.get("state") not in ("playing", "paused", "buffering"):
+        _live.clear()
+        return
+    warning = mpv_control.capacity_warning(status)
+    for kind, entry in list(_live.items()):
+        message, embed, shown = entry
+        if warning == shown:
+            continue
+        try:
+            await message.edit(embed=_with_warning(embed, warning))
+            entry[2] = warning
+        except discord.NotFound:
+            _live.pop(kind, None)
+        except discord.HTTPException as exc:
+            await log(f"movie_night: couldn't update the now-playing message: {exc}")
+
+
+async def status_loop() -> None:
+    while True:
+        await asyncio.sleep(_STATUS_POLL_SECONDS)
+        if not _live:
+            continue
+        try:
+            await refresh_live_messages()
+        except Exception as exc:  # noqa: BLE001
+            await log(f"movie_night: checking the player's viewers failed: {exc}")
 
 
 def _commander_channel(guild: discord.Guild) -> Optional[discord.TextChannel]:
@@ -264,6 +350,7 @@ async def _post_admin_now_playing(guild: discord.Guild, title: str, year: Option
     view = discord.ui.View()
     view.add_item(discord.ui.Button(label="🔑  ADMIN CONTROLS", style=discord.ButtonStyle.link, url=link))
     add_transport_buttons(view)
+    warning = await _current_warning()
     try:
         existing = None
         async for old in channel.history(limit=20):
@@ -271,9 +358,11 @@ async def _post_admin_now_playing(guild: discord.Guild, title: str, year: Option
                 existing = old
                 break
         if existing:
-            await existing.edit(embed=embed, view=view)
+            await existing.edit(embed=_with_warning(embed, warning), view=view)
+            message = existing
         else:
-            await channel.send(embed=embed, view=view)
+            message = await channel.send(embed=_with_warning(embed, warning), view=view)
+        _track("admin", message, embed, warning)
     except Exception as exc:  # noqa: BLE001
         await log(f"movie_night: couldn't post to #{channel.name}: {exc}")
 
@@ -445,13 +534,27 @@ class VoteView(discord.ui.View):
 
 
 async def post_vote(guild: discord.Guild) -> bool:
-    candidates = await radarr.list_downloaded_movies()
-    if len(candidates) < 2:
-        await log("movie_night: fewer than 2 downloaded movies available — skipping tonight's vote")
-        return False
+    if features.is_movienight():
+        if _vote_channel(guild) is None:  # not the server Movie Night is set up for: leave the player alone
+            await log(f"movie_night: {_no_channel_reason()} — skipping vote")
+            return False
+        # No Radarr here: pick from the Plex library the player is signed in to.
+        try:
+            candidates = await player_library.random_movies(settings.movie_night_candidate_count)
+        except Exception as exc:  # noqa: BLE001
+            await log(f"movie_night: couldn't read the Movie Night player's library for the vote: {exc}")
+            return False
+        if len(candidates) < 2:
+            await log("movie_night: fewer than 2 movies in the player's Plex library — skipping tonight's vote")
+            return False
+    else:
+        candidates = await radarr.list_downloaded_movies()
+        if len(candidates) < 2:
+            await log("movie_night: fewer than 2 downloaded movies available — skipping tonight's vote")
+            return False
     channel = _vote_channel(guild)
     if channel is None:
-        await log("movie_night: no #general channel found — skipping vote")
+        await log(f"movie_night: {_no_channel_reason()} — skipping vote")
         return False
 
     picks = random.sample(candidates, min(settings.movie_night_candidate_count, len(candidates)))
@@ -460,7 +563,7 @@ async def post_vote(guild: discord.Guild) -> bool:
     _current_vote["votes"] = {}
     _save_vote_state()
     embed = _build_vote_embed(picks, {})
-    await channel.send(content="@everyone", embed=embed, view=VoteView(picks))
+    await channel.send(content=_everyone(), embed=embed, view=VoteView(picks))
     return True
 
 
@@ -504,6 +607,7 @@ async def announce_winner(guild: discord.Guild, is_test: bool = False) -> bool:
     if is_test:
         note = f"manual test trigger, not tonight's real pick — {note}"
     view = None
+    warning = ""
     if started:
         embed.description = (
             f"**{winner.title}**" + (f" ({winner.year})" if winner.year else "") + f"\n{note} — it's already loading up, click below to watch together!"
@@ -512,8 +616,11 @@ async def announce_winner(guild: discord.Guild, is_test: bool = False) -> bool:
         # never be the admin one (that would hand everyone the admin
         # password and show them the control tab).
         view = discord.ui.View()
-        view.add_item(discord.ui.Button(label="▶️  WATCH LIVE", style=discord.ButtonStyle.link, url=mpv_control.viewer_link()))
+        watch_url = mpv_control.viewer_link()
+        if watch_url:
+            view.add_item(discord.ui.Button(label="▶️  WATCH LIVE", style=discord.ButtonStyle.link, url=watch_url))
         add_transport_buttons(view)
+        warning = await _current_warning()
     else:
         search_url = "https://app.plex.tv/desktop#!/search?query=" + urllib.parse.quote(winner.title)
         embed.description = (
@@ -522,8 +629,9 @@ async def announce_winner(guild: discord.Guild, is_test: bool = False) -> bool:
         embed.add_field(name="Find it in Plex", value=f"[Search for it]({search_url})", inline=False)
     if winner.poster_url:
         embed.set_image(url=winner.poster_url)
-    await channel.send(content=None if is_test else "@everyone", embed=embed, view=view)
+    message = await channel.send(content=None if is_test else _everyone(), embed=_with_warning(embed, warning), view=view)
     if started:
+        _track("public", message, embed, warning)
         await _post_admin_now_playing(guild, winner.title, winner.year)
         if not is_test:
             await _dm_admin_links(guild)
@@ -542,6 +650,10 @@ async def start_in_neko(movie: "radarr.LibraryMovie") -> bool:
     if not settings.neko_mpv_shim_url:
         return False
     try:
+        if movie.rating_key:
+            # From the player's own library (Movie Night only mode): play
+            # exactly that item rather than searching by title again.
+            return await mpv_control.play_by_rating_key(movie.rating_key)
         return await mpv_control.play(movie.title, movie.year)
     except Exception as exc:  # noqa: BLE001
         await log(f"movie_night: neko-mpv automation failed: {exc!r}")
@@ -570,18 +682,24 @@ async def play_now(channel: discord.abc.Messageable, movie: "radarr.LibraryMovie
 
     embed = discord.Embed(title="🎬 Now playing", color=GOLD)
     view = None
+    warning = ""
     if started:
         embed.description = f"**{movie.title}**" + (f" ({movie.year})" if movie.year else "") + "\nIt's already loading up, click below to watch together!"
         view = discord.ui.View()
-        view.add_item(discord.ui.Button(label="▶️  WATCH LIVE", style=discord.ButtonStyle.link, url=mpv_control.viewer_link()))
+        watch_url = mpv_control.viewer_link()
+        if watch_url:
+            view.add_item(discord.ui.Button(label="▶️  WATCH LIVE", style=discord.ButtonStyle.link, url=watch_url))
         add_transport_buttons(view)
+        warning = await _current_warning()
     else:
         search_url = "https://app.plex.tv/desktop#!/search?query=" + urllib.parse.quote(movie.title)
         embed.description = f"**{movie.title}**" + (f" ({movie.year})" if movie.year else "") + "\nCouldn't start it automatically — grab it yourself in Plex instead."
         embed.add_field(name="Find it in Plex", value=f"[Search for it]({search_url})", inline=False)
     if movie.poster_url:
         embed.set_image(url=movie.poster_url)
-    await channel.send(embed=embed, view=view)
+    message = await channel.send(embed=_with_warning(embed, warning), view=view)
+    if started:
+        _track("public", message, embed, warning)
     if started and getattr(channel, "guild", None) is not None:
         await _post_admin_now_playing(channel.guild, movie.title, movie.year)
     return started
@@ -638,11 +756,21 @@ async def play_specific(interaction: discord.Interaction, query: str) -> None:
     matches, or report nothing found. Assumes the interaction has already
     been deferred by the caller.
     """
-    candidates = await radarr.list_downloaded_movies()
-    normalized = query.strip().lower()
-    matches = [m for m in candidates if normalized in m.title.lower()]
+    if features.is_movienight():
+        try:
+            matches = await player_library.find_movies(query)
+        except Exception as exc:  # noqa: BLE001
+            await log(f"movie_night: searching the player's library failed: {exc}")
+            await interaction.followup.send("⚠️ Couldn't search the Movie Night player's library right now. Is the player running and paired?", ephemeral=True)
+            return
+        not_found = f"Couldn't find **{query}** in the Plex library."
+    else:
+        candidates = await radarr.list_downloaded_movies()
+        normalized = query.strip().lower()
+        matches = [m for m in candidates if normalized in m.title.lower()]
+        not_found = f"Couldn't find a downloaded movie matching **{query}**."
     if not matches:
-        await interaction.followup.send(f"Couldn't find a downloaded movie matching **{query}**.", ephemeral=True)
+        await interaction.followup.send(not_found, ephemeral=True)
         return
     if len(matches) == 1:
         started = await play_now(interaction.channel, matches[0])
@@ -660,7 +788,14 @@ async def force_winner_now(guild: discord.Guild) -> bool:
     otherwise just picks one random downloaded movie and announces+plays it.
     """
     if not _current_vote.get("candidates"):
-        candidates = await radarr.list_downloaded_movies()
+        if features.is_movienight():
+            try:
+                candidates = await player_library.random_movies(1)
+            except Exception as exc:  # noqa: BLE001
+                await log(f"movie_night: couldn't read the Movie Night player's library: {exc}")
+                return False
+        else:
+            candidates = await radarr.list_downloaded_movies()
         if not candidates:
             return False
         _current_vote.clear()
@@ -687,6 +822,8 @@ async def vote_loop() -> None:
     await _wait_for_client()
     while True:
         await _sleep_until_hour_utc(settings.movie_night_vote_hour_utc)
+        if not settings.movie_night_daily_vote:
+            continue  # automatic votes are switched off; /movie-night still posts one
         for guild in _client.guilds:
             try:
                 await post_vote(guild)
@@ -698,6 +835,8 @@ async def announce_loop() -> None:
     await _wait_for_client()
     while True:
         await _sleep_until_hour_utc(settings.movie_night_hour_utc)
+        if not settings.movie_night_daily_vote and not _current_vote.get("candidates"):
+            continue  # nothing automatic, and no vote was started by hand
         for guild in _client.guilds:
             try:
                 await announce_winner(guild)

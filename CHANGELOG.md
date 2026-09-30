@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.2.0 — 2026-09-30
+
+### Added
+- **Movie Night only mode** (`SERVARR_MODE=movienight`, or the first choice on the setup page). For people who only want the watch party, typically with the Guest edition of the [Movie Night player](https://github.com/spongebobmoviept-lab/movienight-player) on a friend's Plex server. Release calendars, leveling, moderation, the rules gate, the now-playing board and the Sonarr/Radarr/Tautulli/Plex/Reclaimarr connections are switched off: no background jobs, no slash commands, no message handling, no setup sections, and their setup endpoints answer `409`. The default, `full` (Everything), behaves as before. `SERVARR_MODE` wins over the setup page, which then shows the mode as locked.
+- A short setup wizard for that mode: bot token, invite link, server and Movie Night channel, player, done. The invite asks only for View Channels, Send Messages, Embed Links and Read Message History. No privileged intents are required (Server Members is optional, for sending DJs their link by DM), and the bot never pings `@everyone`.
+- In that mode the vote, `/play-movie` and the web remote read the library through the paired Movie Night player, so Servarr needs no Plex, Radarr or Sonarr connection.
+- The bot connects as soon as a token is saved on the setup page, and reconnects when the token or the mode changes. No container restart.
+- "Too many viewers" line on the Now playing posts when the Movie Night player (1.1 or newer) reports more viewers than the host's upload can carry. The setup page shows the player's edition when pairing. Older players are unaffected.
+- **Movie Night channel** setting (`MOVIE_NIGHT_CHANNEL_ID`): where the vote and the announcements go. The default is still `#general`.
+- **Post a vote every day** switch (`MOVIE_NIGHT_DAILY_VOTE`), on by default.
+- `SERVARR_HOST` and `SERVARR_PORT`: where the web page listens (default `0.0.0.0:8888`, as before). The image now starts through `python -m app.serve`, and `python -m app.serve --check` is a health check that follows those settings.
+- "Which edition do I need?" table at the top of the README.
+- Images are tagged `1.2.0`, `1.2`, `1` and `latest`.
+
+### Changed
+- The bundled player's pairing file is watched continuously, so it doesn't matter which container starts first. When the pairing came from that file, Servarr follows the file's address and key (player 1.1 bundles change the address). A pairing typed on the setup page still wins and is left alone.
+- If Discord can't be reached at start (network not up yet), the bot keeps retrying instead of staying offline until the next restart.
+- Picking another server on the setup page moves the slash commands there right away.
+- `/mpv-play` gives the DJ the Movie Night player's admin link (before, only with a plain Companion player).
+- The DJ control panel appears as soon as a player is paired or the control channel is picked, not at the next restart.
+
+### Security
+- `data/connections_overrides.json` (bot token, API keys) and the admin login file are written with mode `0600`; an existing file is tightened on start.
+- Movie Night only mode connects without the Message Content intent and invites the bot with four permissions.
+
+### Fixed
+- The first-run Fine-tuning step showed empty number fields and saved zeros for the vote hours, the number of movies offered and the XP settings.
+- Reloading the setup page after creating the login but before saving a token got stuck on "An admin login already exists". It now asks you to log in and carries on.
+- A bot token set with `DISCORD_TOKEN` no longer has to be pasted again in the wizard.
+- A player that reports `buffering` counts as playing.
+- The Now playing post no longer fails when the player has no watch link yet.
+
 ## 1.1.1 — 2026-09-30
 
 ### Fixed

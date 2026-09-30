@@ -8,6 +8,7 @@ to everyone regardless of Member status.
 
 import discord
 
+from . import features
 from .config import settings
 from .logger import log
 
@@ -56,6 +57,9 @@ class RulesGateView(discord.ui.View):
 
     @discord.ui.button(label="I Agree to the Rules", emoji="✅", style=discord.ButtonStyle.success, custom_id=GATE_CUSTOM_ID)
     async def agree(self, interaction: discord.Interaction, _button: discord.ui.Button) -> None:
+        if features.is_movienight():
+            await interaction.response.send_message("The rules gate is turned off on this server.", ephemeral=True)
+            return
         guild = interaction.guild
         role = discord.utils.get(guild.roles, name=MEMBER_ROLE_NAME)
         if role is None:

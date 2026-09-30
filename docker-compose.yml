@@ -1,7 +1,7 @@
 services:
   servarr:
-    image: ghcr.io/spongebobmoviept-lab/servarr:1.1.1   # ready-made image (amd64 + arm64)
-    # build: https://github.com/spongebobmoviept-lab/Servarr.git#v1.1.1   # build from source instead: uncomment, then `docker compose up -d --build`
+    image: ghcr.io/spongebobmoviept-lab/servarr:1.2.0   # ready-made image (amd64 + arm64)
+    # build: https://github.com/spongebobmoviept-lab/Servarr.git#v1.2.0   # build from source instead: uncomment, then `docker compose up -d --build`
     container_name: servarr
     restart: unless-stopped
     environment:
@@ -9,6 +9,9 @@ services:
       # writable for it automatically on start.
       - PUID=${PUID:-1000}
       - PGID=${PGID:-1000}
+      # Only want Movie Night (the watch party)? Uncomment this, or pick
+      # "Movie Night only" on the setup page. See the README.
+      # - SERVARR_MODE=movienight
     ports:
       - "8888:8888"
     env_file:
@@ -21,7 +24,7 @@ services:
       # README). Otherwise just paste the player's pair code in /setup.
       #   - pairing:/pairing:ro
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8888/health')"]
+      test: ["CMD", "python", "-m", "app.serve", "--check"]   # follows SERVARR_HOST / SERVARR_PORT
       interval: 30s
       timeout: 5s
       retries: 3

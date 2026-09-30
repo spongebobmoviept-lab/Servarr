@@ -1,10 +1,17 @@
 import os
 
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.2.0"
 
 
 def _env_int(name: str, default: int) -> int:
     return int(os.environ.get(name, default))
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name, "").strip().lower()
+    if not value:
+        return default
+    return value not in ("0", "false", "no", "off")
 
 
 def _env_list(name: str, default: str = "") -> list[str]:
@@ -13,6 +20,12 @@ def _env_list(name: str, default: str = "") -> list[str]:
 
 class Settings:
     def __init__(self) -> None:
+        # Which features run: "full" (everything, the default) or
+        # "movienight" (Movie Night only). Also picked on the setup page;
+        # SERVARR_MODE wins when set. See features.py.
+        self.servarr_mode_env = os.environ.get("SERVARR_MODE", "").strip()
+        self.servarr_mode = ""  # the setup page's choice (settings_overrides.json)
+
         self.sonarr_url = os.environ.get("SONARR_URL", "")
         self.sonarr_api_key = os.environ.get("SONARR_API_KEY", "")
 
@@ -35,6 +48,10 @@ class Settings:
         self.movie_night_vote_hour_utc = _env_int("MOVIE_NIGHT_VOTE_HOUR_UTC", 22)  # ~6pm US Eastern
         self.movie_night_hour_utc = _env_int("MOVIE_NIGHT_HOUR_UTC", 1)  # ~9pm US Eastern, next UTC day
         self.movie_night_candidate_count = _env_int("MOVIE_NIGHT_CANDIDATE_COUNT", 5)
+        # The automatic part: post the vote every day and start the winner
+        # at showtime. Off = Movie Night only happens when a DJ/mod runs it
+        # (/play-movie, /movie-night, /movie-night-play).
+        self.movie_night_daily_vote = _env_bool("MOVIE_NIGHT_DAILY_VOTE", True)
         self.movie_night_pause_upgrade_minutes = _env_int("MOVIE_NIGHT_PAUSE_UPGRADE_MINUTES", 240)
         # Who's allowed to start/stop/control playback with /play-movie,
         # /stop-movie, and /mpv-* outside the normal nightly vote — anyone
@@ -43,6 +60,9 @@ class Settings:
         # DJ") without handing those people full mod permissions. Blank
         # means only Manage Server can use it.
         self.movie_night_dj_role_id = os.environ.get("MOVIE_NIGHT_DJ_ROLE_ID", "").strip()
+        # Where the vote, the announcements and the Watch Live button go
+        # (a channel ID, picked in the setup page). Blank means #general.
+        self.movie_night_channel_id = os.environ.get("MOVIE_NIGHT_CHANNEL_ID", "").strip()
 
         # Movie Night's player (optional) — any player that speaks the Plex
         # Companion HTTP API (e.g. plex-mpv-shim) and is shown to viewers
@@ -64,6 +84,12 @@ class Settings:
         # Also accepts MOVIENIGHT_PAIRING_FILE (the player bundle's name).
         # Empty = look in /pairing/pair.json and /pair/pair.json.
         self.player_pair_file = (os.environ.get("PLAYER_PAIR_FILE") or os.environ.get("MOVIENIGHT_PAIRING_FILE", "")).strip()
+        # Where the saved pairing came from (kept by connections_store, not
+        # set by hand): "file" = the pairing file, "manual" = typed on the
+        # setup page, "" = unknown (paired before 1.2, or from PLAYER_URL).
+        # player_pair_file_url is the address the pairing file last gave us.
+        self.player_pair_source = ""
+        self.player_pair_file_url = ""
         self.neko_mpv_viewer_url = os.environ.get("NEKO_MPV_VIEWER_URL", "").rstrip("/")
         self.neko_mpv_public_url = (
             os.environ.get("PLAYER_VIEWER_URL") or os.environ.get("NEKO_MPV_PUBLIC_URL", "")

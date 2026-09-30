@@ -10,6 +10,7 @@ from typing import Optional
 
 import discord
 
+from . import features
 from .config import settings
 from .logger import log
 from .tautulli import get_activity
@@ -71,6 +72,8 @@ async def _find_or_create_message(guild: discord.Guild) -> Optional[discord.Mess
 
 async def poll_loop() -> None:
     global _message
+    if features.is_movienight():
+        return  # Movie Night only mode: no Plex/Tautulli monitor
     if not (settings.tautulli_url and settings.tautulli_api_key):
         await log("plex_monitor: TAUTULLI_URL/TAUTULLI_API_KEY not set — live now-playing view disabled")
         return

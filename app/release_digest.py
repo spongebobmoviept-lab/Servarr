@@ -27,7 +27,7 @@ from typing import Optional
 
 import discord
 
-from . import calendar_embeds
+from . import calendar_embeds, features
 from .config import settings
 from .logger import log
 from .radarr import get_calendar as radarr_calendar
@@ -122,7 +122,7 @@ async def seed_pinned_tile(guild: discord.Guild) -> None:
     stray post that already landed after it before this bot started gets
     reclaimed right away instead of waiting for the next message.
     """
-    if not _tile_enabled():
+    if not _tile_enabled() or features.is_movienight():
         return
     channel = discord.utils.get(guild.text_channels, name=settings.pinned_tile_channel)
     if channel is None:
@@ -152,6 +152,8 @@ def on_channel_message(message: discord.Message) -> None:
     tracked there yet.
     """
     if _client is None or _client.user is None or message.author.id == _client.user.id:
+        return
+    if features.is_movienight():
         return
     channel = message.channel
     if not isinstance(channel, discord.TextChannel):
@@ -229,6 +231,8 @@ async def _sleep_until_hour_utc(hour: int) -> None:
 
 
 async def daily_loop() -> None:
+    if features.is_movienight():
+        return  # Movie Night only mode: no release calendars
     while _client is None or not _client.guilds:
         await asyncio.sleep(2)
     while True:

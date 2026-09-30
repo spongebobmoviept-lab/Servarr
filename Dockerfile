@@ -20,5 +20,11 @@ RUN chmod 0755 /usr/local/bin/entrypoint.sh \
 ENV DATA_DIR=/data
 EXPOSE 8888
 
+# app/serve.py runs uvicorn on 0.0.0.0:8888 unless SERVARR_HOST / SERVARR_PORT
+# say otherwise (e.g. SERVARR_HOST=127.0.0.1 with host networking). Its
+# --check asks /health wherever that is.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD ["python", "-m", "app.serve", "--check"]
+
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8888"]
+CMD ["python", "-m", "app.serve"]

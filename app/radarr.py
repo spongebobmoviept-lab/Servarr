@@ -56,6 +56,9 @@ class LibraryMovie:
     year: int
     poster_url: Optional[str]
     tmdb_id: Optional[int] = None
+    # Set when the movie came from the Movie Night player's library (Movie
+    # Night only mode): its Plex ratingKey, so it plays that exact item.
+    rating_key: Optional[str] = None
 
 
 @with_retry(label="Radarr: list downloaded movies")
