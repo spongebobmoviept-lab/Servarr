@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- The release boards survive a restart. The bot now remembers which message it posted in each release channel (`data/release_digest_messages.json`) and re-adopts those boards on startup, so the next daily post (or bottom reclaim) replaces them instead of stacking a fresh copy on top — before, every restart left the old board orphaned and the copies piled up.
+
 ## 1.2.0 — 2026-09-30
 
 ### Added

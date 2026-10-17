@@ -23,6 +23,8 @@ this on a channel dedicated to the tile.
 
 import asyncio
 import datetime
+import json
+import os
 from typing import Optional
 
 import discord
@@ -45,6 +47,50 @@ _RECLAIM_DEBOUNCE_SECONDS = 8
 
 _last_message: dict[int, discord.Message] = {}
 _reclaim_tasks: dict[int, asyncio.Task] = {}
+
+# Tracked-board persistence. _last_message used to be memory only, so every
+# restart orphaned whatever board was live, and the next daily post stacked
+# a fresh copy on top instead of replacing it. Same /data json pattern
+# xp_store already uses.
+_STATE_FILE = os.path.join(settings.data_dir, "release_digest_messages.json")
+
+
+def _save_state() -> None:
+    try:
+        with open(_STATE_FILE, "w") as f:
+            json.dump({str(cid): m.id for cid, m in _last_message.items()}, f)
+    except OSError:
+        pass
+
+
+async def restore_tracked(guild: discord.Guild) -> None:
+    """Call once from on_ready, before anything posts. Re-adopts the boards
+    this bot posted before the restart, so the next daily post (or bottom
+    reclaim) replaces them instead of stacking a fresh copy on top. Only the
+    self-managed digest channels — the pinned tile is re-adopted by
+    seed_pinned_tile's history scan instead.
+    """
+    try:
+        with open(_STATE_FILE) as f:
+            saved = json.load(f)
+    except (OSError, ValueError):
+        return
+    for cid, mid in saved.items():
+        channel = guild.get_channel(int(cid))
+        if channel is None or channel.name not in _SELF_MANAGED_CHANNEL_NAMES:
+            continue
+        if channel.id in _last_message:
+            continue
+        try:
+            msg = await channel.fetch_message(int(mid))
+        except discord.NotFound:
+            continue  # deleted while we were down; the next post starts fresh
+        except discord.HTTPException as exc:
+            await log(f"release_digest: couldn't restore board in #{channel.name}: {exc}")
+            continue
+        _last_message[channel.id] = msg
+        if msg.id != channel.last_message_id:
+            _schedule_reclaim(channel)
 
 
 def set_client(client: discord.Client) -> None:
@@ -86,6 +132,7 @@ async def _replace_tracked_message(channel: discord.TextChannel, embed: discord.
             await log(f"release_digest: couldn't delete old board in #{channel.name}: {exc}")
     try:
         _last_message[channel.id] = await channel.send(embed=embed)
+        _save_state()
     except discord.HTTPException as exc:
         await log(f"release_digest: couldn't post to #{channel.name}: {exc}")
 
@@ -131,6 +178,7 @@ async def seed_pinned_tile(guild: discord.Guild) -> None:
         async for msg in channel.history(limit=20):
             if _is_pinned_tile(msg):
                 _last_message[channel.id] = msg
+                _save_state()
                 if msg.id != channel.last_message_id:
                     _schedule_reclaim(channel)
                 return
@@ -170,6 +218,7 @@ def on_channel_message(message: discord.Message) -> None:
             pending.cancel()
             _reclaim_tasks.pop(channel.id, None)
         _last_message[channel.id] = message
+        _save_state()
         return
 
     if channel.id not in _last_message:
@@ -214,6 +263,7 @@ async def _reclaim_bottom(channel: discord.TextChannel) -> None:
             await log(f"release_digest: couldn't delete stale tile in #{channel.name}: {exc}")
         _last_message.pop(channel.id, None)
         _reclaim_tasks.pop(channel.id, None)
+        _save_state()
         return
 
     if not tracked.embeds:

@@ -588,6 +588,10 @@ async def on_ready() -> None:
         if features.is_movienight():
             continue
         try:
+            await release_digest.restore_tracked(guild)
+        except Exception as exc:  # noqa: BLE001
+            await log(f"servarr: couldn't restore digest tracking: {exc}")
+        try:
             await release_digest.seed_pinned_tile(guild)
         except Exception as exc:  # noqa: BLE001
             await log(f"servarr: couldn't seed the pinned tile: {exc}")
